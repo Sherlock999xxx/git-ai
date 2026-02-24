@@ -12,6 +12,11 @@ use crate::git::sync_authorship::fetch_authorship_notes;
 use std::fs;
 use std::path::PathBuf;
 
+#[cfg(windows)]
+const NULL_HOOKS: &str = "NUL";
+#[cfg(not(windows))]
+const NULL_HOOKS: &str = "/dev/null";
+
 #[derive(Debug)]
 pub enum CiEvent {
     Merge {
@@ -380,7 +385,7 @@ impl CiContext {
         let fetch_refspec = format!("+refs/notes/ai:{}", tracking_ref);
         let mut fetch_args = repo.global_args_for_exec();
         fetch_args.push("-c".to_string());
-        fetch_args.push("core.hooksPath=/dev/null".to_string());
+        fetch_args.push(format!("core.hooksPath={}", NULL_HOOKS));
         fetch_args.push("fetch".to_string());
         fetch_args.push("--no-tags".to_string());
         fetch_args.push("--recurse-submodules=no".to_string());
