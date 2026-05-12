@@ -113,6 +113,29 @@ pub fn handle_notes_migrate(args: &[String]) {
         }
     }
 
+    // Skip entries already confirmed synced (enables safe re-run after interruption).
+    // Only skip synced=1 entries — pending (synced=0) entries still need uploading.
+    let pre_cached_count = entries.len();
+    if let Ok(db) = NotesDatabase::global()
+        && let Ok(lock) = db.lock()
+    {
+        let all_shas: Vec<&str> = entries.iter().map(|(s, _)| s.as_str()).collect();
+        if let Ok(synced) = lock.get_synced_shas(&all_shas) {
+            entries.retain(|(sha, _)| !synced.contains(sha));
+        }
+    }
+    if entries.len() < pre_cached_count {
+        eprintln!(
+            "Skipping {} already-cached note(s).",
+            pre_cached_count - entries.len()
+        );
+    }
+
+    if entries.is_empty() {
+        eprintln!("All notes already migrated. Nothing to upload.");
+        return;
+    }
+
     eprintln!(
         "Read {} note(s). Uploading in chunks of 50 ...",
         entries.len()

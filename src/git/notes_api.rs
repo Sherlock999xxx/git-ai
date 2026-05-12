@@ -217,8 +217,8 @@ pub fn search_notes(repo: &Repository, pattern: &str) -> Result<Vec<String>, Git
 /// Only the most recent `limit` commits reachable from HEAD are considered.
 ///
 /// The ref is left in place after the call; callers use it with `--notes=ai-display`.
-/// It is safe to call repeatedly — each call overwrites the previous state via
-/// `reset refs/notes/ai-display` in the fast-import stream.
+/// It is safe to call repeatedly — each call starts from an empty tree via
+/// `from 0000...` so stale notes from prior calls are discarded.
 ///
 /// Returns the number of notes that were written into `refs/notes/ai-display`.
 pub fn materialize_notes_for_display(repo: &Repository, limit: usize) -> Result<usize, GitAiError> {
@@ -257,8 +257,7 @@ pub fn materialize_notes_for_display(repo: &Repository, limit: usize) -> Result<
     // 3. Build a git fast-import stream.
     //    Structure:
     //      - One `blob` stanza per note (each gets a mark ID).
-    //      - `reset refs/notes/ai-display` to delete any previous state.
-    //      - One `commit` stanza that attaches all blobs as notes.
+    //      - One `commit` stanza with `from 0000...` (empty tree) that attaches all blobs.
     let mut stream = String::new();
     let mut marks: Vec<(usize, String)> = Vec::new(); // (mark_id, commit_sha)
 
@@ -276,16 +275,15 @@ pub fn materialize_notes_for_display(repo: &Repository, limit: usize) -> Result<
     }
 
     // Commit stanza — mirrors the pattern used in refs.rs notes_add_batch().
-    // Use `data 0` (empty commit message) and `M 100644 :<mark> <flat-sha>` to
-    // store each blob as a tree entry keyed by commit SHA (the flat notes path).
+    // Use `from` with an all-zeros SHA to start from an empty tree, ensuring
+    // stale notes from prior materializations are removed.
     stream.push_str("commit refs/notes/ai-display\n");
     stream.push_str("committer git-ai <git-ai@localhost> 1000000000 +0000\n");
     stream.push_str("data 0\n");
+    stream.push_str("from 0000000000000000000000000000000000000000\n");
 
     let count = marks.len();
     for (mark_id, commit_sha) in &marks {
-        // `D <path>` removes any existing entry so this is idempotent.
-        stream.push_str(&format!("D {}\n", commit_sha));
         stream.push_str(&format!("M 100644 :{} {}\n", mark_id, commit_sha));
     }
     stream.push('\n');
@@ -316,18 +314,40 @@ pub fn materialize_notes_for_display(repo: &Repository, limit: usize) -> Result<
 ///
 /// This function is a best-effort operation: errors are logged but not propagated
 /// (callers should treat failure as a cache miss, not a hard error).
-pub fn warm_cache_for_remote(repo: &Repository, _remote: &str) -> Result<(), GitAiError> {
+pub fn warm_cache_for_remote(repo: &Repository, remote: &str) -> Result<(), GitAiError> {
     use crate::api::client::{ApiClient, ApiContext};
     use crate::git::repository::exec_git;
 
-    // 1. Walk recent HEAD history.
+    // 1. Walk recent history. Prefer the remote's default branch; fall back to HEAD.
+    let remote_head = format!("refs/remotes/{}/HEAD", remote);
+    let rev_target = {
+        let check_args: Vec<String> = repo
+            .global_args_for_exec()
+            .into_iter()
+            .chain([
+                "rev-parse".to_string(),
+                "--verify".to_string(),
+                "--quiet".to_string(),
+                remote_head.clone(),
+            ])
+            .collect();
+        if exec_git(&check_args)
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+        {
+            remote_head
+        } else {
+            "HEAD".to_string()
+        }
+    };
+
     let rev_list_args: Vec<String> = repo
         .global_args_for_exec()
         .into_iter()
         .chain([
             "rev-list".to_string(),
             "--max-count=500".to_string(),
-            "HEAD".to_string(),
+            rev_target,
         ])
         .collect();
 

@@ -282,7 +282,14 @@ fn read_request(stream: &mut TcpStream) -> Result<Request, GitAiError> {
         }
     }
 
-    // Body.
+    // Body — cap at 50 MB to prevent OOM from malformed Content-Length.
+    const MAX_BODY: usize = 50 * 1024 * 1024;
+    if content_length > MAX_BODY {
+        return Err(GitAiError::Generic(format!(
+            "Content-Length {} exceeds maximum {}",
+            content_length, MAX_BODY
+        )));
+    }
     let mut body = vec![0u8; content_length];
     if content_length > 0 {
         reader.read_exact(&mut body).map_err(GitAiError::IoError)?;

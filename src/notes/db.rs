@@ -12,7 +12,7 @@
 
 use crate::error::GitAiError;
 use rusqlite::{Connection, params};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
@@ -59,6 +59,10 @@ pub struct NotesDatabase {
 
 impl NotesDatabase {
     /// Return (or lazily initialize) the global database mutex.
+    ///
+    /// In test builds with `GIT_AI_TEST_NOTES_DB_PATH` set, the OnceLock singleton
+    /// cannot be re-initialized per-test. Tests requiring isolated DB instances should
+    /// use `open_at_path()` directly instead of relying on this singleton.
     pub fn global() -> Result<&'static Mutex<NotesDatabase>, GitAiError> {
         let db_mutex = NOTES_DB.get_or_init(|| match Self::new() {
             Ok(db) => Mutex::new(db),
@@ -71,6 +75,26 @@ impl NotesDatabase {
             }
         });
         Ok(db_mutex)
+    }
+
+    /// Open a database at an explicit path. Useful for tests that need an isolated
+    /// DB instance without relying on the process-global OnceLock singleton.
+    pub fn open_at_path(path: &std::path::Path) -> Result<Self, GitAiError> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let conn = Connection::open(path)?;
+        conn.execute_batch(
+            r#"
+            PRAGMA journal_mode=WAL;
+            PRAGMA synchronous=NORMAL;
+            PRAGMA cache_size=-2000;
+            PRAGMA temp_store=MEMORY;
+            "#,
+        )?;
+        let mut db = Self { conn };
+        db.initialize_schema()?;
+        Ok(db)
     }
 
     /// Open (or create) the database at the configured path.
@@ -308,24 +332,63 @@ impl NotesDatabase {
             params![stale_cutoff],
         )?;
 
-        let mut stmt = self.conn.prepare(
-            r#"
-            UPDATE notes
-            SET processing_started_at = ?1
-            WHERE commit_sha IN (
-                SELECT commit_sha FROM notes
-                WHERE synced = 0
-                  AND processing_started_at IS NULL
-                  AND next_retry_at <= ?2
-                  AND attempts < 6
-                ORDER BY next_retry_at
-                LIMIT ?3
-            )
-            RETURNING commit_sha, content, attempts
-            "#,
-        )?;
+        // Select eligible rows first, then lock them. Two-step approach avoids
+        // UPDATE ... RETURNING which requires SQLite 3.35+.
+        let shas: Vec<String> = {
+            let mut stmt = self.conn.prepare(
+                r#"SELECT commit_sha FROM notes
+                   WHERE synced = 0
+                     AND processing_started_at IS NULL
+                     AND next_retry_at <= ?1
+                     AND attempts < 6
+                   ORDER BY next_retry_at
+                   LIMIT ?2"#,
+            )?;
+            let rows = stmt.query_map(params![now, batch_size as i64], |row| {
+                row.get::<_, String>(0)
+            })?;
+            rows.filter_map(|r| r.ok()).collect()
+        };
 
-        let rows = stmt.query_map(params![now, now, batch_size as i64], |row| {
+        if shas.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Lock the selected rows.
+        let placeholders: String = shas
+            .iter()
+            .enumerate()
+            .map(|(i, _)| format!("?{}", i + 2))
+            .collect::<Vec<_>>()
+            .join(",");
+        let update_sql = format!(
+            "UPDATE notes SET processing_started_at = ?1 WHERE commit_sha IN ({})",
+            placeholders
+        );
+        let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(now)];
+        for sha in &shas {
+            params_vec.push(Box::new(sha.clone()));
+        }
+        let param_refs: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|b| b.as_ref()).collect();
+        self.conn.execute(&update_sql, param_refs.as_slice())?;
+
+        // Read back the locked rows.
+        let select_sql = format!(
+            "SELECT commit_sha, content, attempts FROM notes WHERE commit_sha IN ({})",
+            shas.iter()
+                .enumerate()
+                .map(|(i, _)| format!("?{}", i + 1))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        let mut stmt = self.conn.prepare(&select_sql)?;
+        let sha_params: Vec<Box<dyn rusqlite::ToSql>> = shas
+            .iter()
+            .map(|s| Box::new(s.clone()) as Box<dyn rusqlite::ToSql>)
+            .collect();
+        let sha_param_refs: Vec<&dyn rusqlite::ToSql> =
+            sha_params.iter().map(|b| b.as_ref()).collect();
+        let rows = stmt.query_map(sha_param_refs.as_slice(), |row| {
             Ok(PendingNote {
                 commit_sha: row.get(0)?,
                 content: row.get(1)?,
@@ -413,6 +476,34 @@ impl NotesDatabase {
         }
     }
 
+    /// Return the subset of `commit_shas` that exist in the DB with `synced = 1`.
+    pub fn get_synced_shas(&self, commit_shas: &[&str]) -> Result<HashSet<String>, GitAiError> {
+        if commit_shas.is_empty() {
+            return Ok(HashSet::new());
+        }
+        let placeholders: String = commit_shas
+            .iter()
+            .enumerate()
+            .map(|(i, _)| format!("?{}", i + 1))
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "SELECT commit_sha FROM notes WHERE synced = 1 AND commit_sha IN ({})",
+            placeholders
+        );
+        let params_vec: Vec<&dyn rusqlite::ToSql> = commit_shas
+            .iter()
+            .map(|s| s as &dyn rusqlite::ToSql)
+            .collect();
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(params_vec.as_slice(), |row| row.get::<_, String>(0))?;
+        let mut result = HashSet::new();
+        for row in rows {
+            result.insert(row?);
+        }
+        Ok(result)
+    }
+
     /// Retrieve note content for a slice of commit SHAs.
     ///
     /// Only SHAs that exist in the database are returned; missing SHAs are absent
@@ -447,6 +538,29 @@ impl NotesDatabase {
             result.insert(sha, content);
         }
         Ok(result)
+    }
+
+    /// Evict synced cache entries older than `max_age_secs` when the total row
+    /// count exceeds `max_rows`. Returns the number of rows deleted.
+    pub fn evict_stale_cache(
+        &mut self,
+        max_rows: usize,
+        max_age_secs: i64,
+    ) -> Result<usize, GitAiError> {
+        let count: i64 =
+            self.conn
+                .query_row("SELECT COUNT(*) FROM notes WHERE synced = 1", [], |row| {
+                    row.get(0)
+                })?;
+        if (count as usize) <= max_rows {
+            return Ok(0);
+        }
+        let cutoff = unix_now() - max_age_secs;
+        let deleted = self.conn.execute(
+            "DELETE FROM notes WHERE synced = 1 AND last_sync_at < ?1",
+            params![cutoff],
+        )?;
+        Ok(deleted)
     }
 }
 
