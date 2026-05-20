@@ -1,4 +1,4 @@
-use crate::authorship::secrets::redact_secrets_in_text;
+use crate::authorship::secrets::{redact_secrets_in_text, text_contains_secrets};
 use serde_json::Value;
 
 /// Returns true if this key represents a metadata/ID field whose value should NOT be redacted.
@@ -29,9 +29,18 @@ fn is_denied_key(key: &str) -> bool {
         || key.eq_ignore_ascii_case("status")
 }
 
+const MAX_REDACTION_DEPTH: usize = 32;
+
 /// Recursively walk a JSON value, applying secret redaction to string leaves
 /// whose parent key is not on the denylist.
 pub fn redact_json_secrets(value: Value) -> Value {
+    redact_json_secrets_inner(value, 0)
+}
+
+fn redact_json_secrets_inner(value: Value, depth: usize) -> Value {
+    if depth >= MAX_REDACTION_DEPTH {
+        return value;
+    }
     match value {
         Value::Object(map) => Value::Object(
             map.into_iter()
@@ -39,18 +48,22 @@ pub fn redact_json_secrets(value: Value) -> Value {
                     let redacted_v = if is_denied_key(&k) {
                         v
                     } else {
-                        redact_json_secrets(v)
+                        redact_json_secrets_inner(v, depth + 1)
                     };
                     (k, redacted_v)
                 })
                 .collect(),
         ),
-        Value::Array(arr) => Value::Array(arr.into_iter().map(redact_json_secrets).collect()),
+        Value::Array(arr) => Value::Array(
+            arr.into_iter()
+                .map(|v| redact_json_secrets_inner(v, depth + 1))
+                .collect(),
+        ),
         Value::String(s) => {
-            let (redacted, count) = redact_secrets_in_text(&s);
-            if count == 0 {
+            if !text_contains_secrets(&s) {
                 Value::String(s)
             } else {
+                let (redacted, _) = redact_secrets_in_text(&s);
                 Value::String(redacted)
             }
         }
@@ -209,5 +222,23 @@ mod tests {
         assert!(!is_denied_key("output"));
         assert!(!is_denied_key("value"));
         assert!(!is_denied_key("valid")); // ends in "id" letters but not a real ID field
+    }
+
+    #[test]
+    fn test_depth_limit_stops_recursion() {
+        let secret = "sk_test_4eC39HqLyjWDarjtT1zdp7dc";
+        // Build a deeply nested structure exceeding MAX_REDACTION_DEPTH
+        let mut value = json!(secret);
+        for _ in 0..40 {
+            value = json!({ "nested": value });
+        }
+        let result = redact_json_secrets(value);
+        // Walk down to the deepest level — the secret should be preserved
+        // because we stopped recursing before reaching it
+        let mut cursor = &result;
+        for _ in 0..40 {
+            cursor = &cursor["nested"];
+        }
+        assert_eq!(cursor.as_str().unwrap(), secret);
     }
 }

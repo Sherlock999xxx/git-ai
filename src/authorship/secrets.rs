@@ -428,6 +428,31 @@ pub fn redact_secret(secret: &str) -> String {
     format!("{}********{}", prefix, suffix)
 }
 
+/// Returns true if the text contains at least one high-entropy token that looks
+/// like a secret. Performs no heap allocations — scans inline and short-circuits
+/// on the first match.
+pub fn text_contains_secrets(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if !is_secret_char(bytes[i]) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < bytes.len() && is_secret_char(bytes[i]) {
+            i += 1;
+        }
+        let len = i - start;
+        if (MIN_SECRET_LENGTH..=MAX_SECRET_LENGTH).contains(&len)
+            && is_random(&bytes[start..i])
+        {
+            return true;
+        }
+    }
+    false
+}
+
 /// Redact all detected secrets in a text string.
 /// Returns a tuple of (redacted_text, redaction_count).
 pub fn redact_secrets_in_text(text: &str) -> (String, usize) {
