@@ -76,7 +76,30 @@ fn resolve_git_identity() -> Option<String> {
             return Some(encode_for_header(&formatted));
         }
     }
-    resolve_hostname().map(|h| encode_for_header(&h))
+    resolve_fallback_identity().map(|id| encode_for_header(&id))
+}
+
+/// Build a fallback identity matching git's format: `"Username <username@hostname>"`.
+fn resolve_fallback_identity() -> Option<String> {
+    let username = resolve_username()?;
+    let hostname = resolve_hostname().unwrap_or_else(|| "localhost".to_string());
+    Some(format!("{} <{}@{}>", username, username, hostname))
+}
+
+fn resolve_username() -> Option<String> {
+    #[cfg(windows)]
+    if let Ok(u) = std::env::var("USERNAME")
+        && !u.trim().is_empty()
+    {
+        return Some(u.trim().to_string());
+    }
+    #[cfg(not(windows))]
+    if let Ok(u) = std::env::var("USER")
+        && !u.trim().is_empty()
+    {
+        return Some(u.trim().to_string());
+    }
+    None
 }
 
 fn resolve_hostname() -> Option<String> {
