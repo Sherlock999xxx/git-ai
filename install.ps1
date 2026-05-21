@@ -265,12 +265,12 @@ function Set-PathEnsureContains {
 
     $sep = ';'
 
-    function NormalizePath2([string]$p) {
+    function NormalizePath([string]$p) {
         try { return ([IO.Path]::GetFullPath($p.Trim())).TrimEnd('\\').ToLowerInvariant() }
         catch { return ($p.Trim()).TrimEnd('\\').ToLowerInvariant() }
     }
 
-    $normalizedAdd = NormalizePath2 $PathToAdd
+    $normalizedAdd = NormalizePath $PathToAdd
 
     try {
         $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
@@ -278,7 +278,7 @@ function Set-PathEnsureContains {
         if ($userPath) { $entries = ($userPath -split $sep) | Where-Object { $_ -and $_.Trim() -ne '' } }
         $alreadyPresent = $false
         foreach ($e in $entries) {
-            if ((NormalizePath2 $e) -eq $normalizedAdd) { $alreadyPresent = $true; break }
+            if ((NormalizePath $e) -eq $normalizedAdd) { $alreadyPresent = $true; break }
         }
         if ($alreadyPresent) {
             $userStatus = 'AlreadyPresent'
@@ -298,7 +298,7 @@ function Set-PathEnsureContains {
         if ($procPath) { $procEntries = ($procPath -split $sep) | Where-Object { $_ -and $_.Trim() -ne '' } }
         $procHas = $false
         foreach ($e in $procEntries) {
-            if ((NormalizePath2 $e) -eq $normalizedAdd) { $procHas = $true; break }
+            if ((NormalizePath $e) -eq $normalizedAdd) { $procHas = $true; break }
         }
         if (-not $procHas) {
             $env:PATH = if ($procPath) { "$procPath$sep$PathToAdd" } else { $PathToAdd }
