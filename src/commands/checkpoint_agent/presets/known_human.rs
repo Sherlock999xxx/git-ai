@@ -44,9 +44,14 @@ impl AgentPreset for KnownHumanPreset {
                     })
                     .unwrap_or_default();
 
+                let cwd_str = cwd.to_str().unwrap_or(".");
                 let dirty_files = data["dirty_files"].as_object().map(|obj| {
                     obj.iter()
-                        .filter_map(|(k, v)| v.as_str().map(|s| (PathBuf::from(k), s.to_string())))
+                        .filter_map(|(k, v)| {
+                            v.as_str().map(|s| {
+                                (super::parse::resolve_absolute(k, cwd_str), s.to_string())
+                            })
+                        })
                         .collect::<HashMap<PathBuf, String>>()
                 });
 
