@@ -24,7 +24,7 @@ import { dirname, isAbsolute, join, resolve } from "path"
 
 // Absolute path to git-ai binary, replaced at install time by `git-ai install-hooks`
 const GIT_AI_BIN = "__GIT_AI_BINARY_PATH__"
-const CHECKPOINT_TIMEOUT_MS = 30_000
+const CHECKPOINT_TIMEOUT_MS = 10_000
 const CHECKPOINT_ARGS = ["checkpoint", "opencode", "--hook-input", "stdin"]
 
 // Tools that modify files and should be tracked
@@ -176,12 +176,29 @@ const debugLog = (message: string, error?: unknown): void => {
     return
   }
 
-  const detail = error instanceof Error
-    ? `${error.name}: ${error.message}`
-    : error === undefined
-      ? ""
-      : String(error)
-  console.error(`[git-ai opencode] ${message}${detail ? `: ${detail}` : ""}`)
+  try {
+    const detail = error instanceof Error
+      ? `${error.name}: ${error.message}`
+      : error === undefined
+        ? ""
+        : String(error)
+    console.error(`[git-ai opencode] ${message}${detail ? `: ${detail}` : ""}`)
+  } catch {
+    // Debug logging must never be the reason a hook fails.
+  }
+}
+
+const swallowHookErrors = <Args extends unknown[]>(
+  label: string,
+  hook: (...args: Args) => Promise<void>,
+): ((...args: Args) => Promise<void>) => {
+  return async (...args) => {
+    try {
+      await hook(...args)
+    } catch (error) {
+      debugLog(label, error)
+    }
+  }
 }
 
 const runCheckpoint = (hookInput: string): Promise<void> => {
@@ -220,6 +237,9 @@ const runCheckpoint = (hookInput: string): Promise<void> => {
     const stderr: Buffer[] = []
 
     child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk))
+    child.stderr.on("error", (error) => {
+      debugLog("failed to read checkpoint stderr", error)
+    })
     child.stdin.on("error", () => {
       // The child may exit before stdin is fully written; close/error handling below reports failures.
     })
@@ -239,6 +259,15 @@ const runCheckpoint = (hookInput: string): Promise<void> => {
 }
 
 export const GitAiPlugin: Plugin = async (ctx) => {
+  try {
+    return createGitAiPlugin(ctx)
+  } catch (error) {
+    debugLog("failed to initialize plugin", error)
+    return {}
+  }
+}
+
+const createGitAiPlugin = (ctx: Parameters<Plugin>[0]): Awaited<ReturnType<Plugin>> => {
   const { worktree, directory } = ctx
   const defaultCwd = worktree || directory || process.cwd()
 
@@ -414,8 +443,9 @@ export const GitAiPlugin: Plugin = async (ctx) => {
   }
 
   return {
-    "tool.execute.before": async (input: ToolHookInput, output?: { args?: unknown }) => {
-      try {
+    "tool.execute.before": swallowHookErrors(
+      "pre-tool checkpoint failed",
+      async (input: ToolHookInput, output?: { args?: unknown }) => {
         const toolName = hookString(input.tool)
         const isTrackedEdit = isEditTool(toolName)
         const isTrackedBash = isBashTool(toolName)
@@ -444,14 +474,12 @@ export const GitAiPlugin: Plugin = async (ctx) => {
           tool_input: toolInput,
         })
         await runCheckpoint(hookInput)
-      } catch (error) {
-        debugLog("pre-tool checkpoint failed", error)
-        // Checkpoint failures are non-critical — never propagate to the host
-      }
-    },
+      },
+    ),
 
-    "tool.execute.after": async (input: ToolHookInput, output?: { metadata?: unknown }) => {
-      try {
+    "tool.execute.after": swallowHookErrors(
+      "post-tool checkpoint failed",
+      async (input: ToolHookInput, output?: { metadata?: unknown }) => {
         const toolName = hookString(input.tool)
         if (!isEditTool(toolName) && !isBashTool(toolName)) {
           return
@@ -479,11 +507,8 @@ export const GitAiPlugin: Plugin = async (ctx) => {
           tool_input: toolInput,
         })
         await runCheckpoint(hookInput)
-      } catch (error) {
-        debugLog("post-tool checkpoint failed", error)
-        // Checkpoint failures are non-critical — never propagate to the host
-      }
-    },
+      },
+    ),
   }
 }
 
