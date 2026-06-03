@@ -1,10 +1,10 @@
 //! Droid agent implementation with sweep discovery.
 
 use crate::authorship::authorship_log_serialization::generate_session_id;
-use crate::transcripts::agent::{Agent, PathResolverKind, StreamDescriptor};
-use crate::transcripts::sweep::{DiscoveredSession, SweepStrategy, TranscriptFormat};
-use crate::transcripts::types::{TranscriptBatch, TranscriptError};
-use crate::transcripts::watermark::{HybridWatermark, WatermarkStrategy};
+use crate::streams::agent::{Agent, PathResolverKind, StreamDescriptor};
+use crate::streams::sweep::{DiscoveredSession, StreamFormat, SweepStrategy};
+use crate::streams::types::{StreamBatch, StreamError};
+use crate::streams::watermark::{HybridWatermark, WatermarkStrategy};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -83,7 +83,7 @@ impl Agent for DroidAgent {
         SweepStrategy::Periodic(Duration::from_secs(30 * 60))
     }
 
-    fn discover_sessions(&self) -> Result<Vec<DiscoveredSession>, TranscriptError> {
+    fn discover_sessions(&self) -> Result<Vec<DiscoveredSession>, StreamError> {
         let paths = Self::scan_conversation_files();
         let mut sessions = Vec::new();
 
@@ -117,7 +117,7 @@ impl Agent for DroidAgent {
         path: &Path,
         watermark: Box<dyn WatermarkStrategy>,
         session_id: &str,
-    ) -> Result<TranscriptBatch, TranscriptError> {
+    ) -> Result<StreamBatch, StreamError> {
         use std::fs::File;
         use std::io::{BufReader, Seek, SeekFrom};
 
@@ -125,7 +125,7 @@ impl Agent for DroidAgent {
         let hybrid_watermark = watermark
             .as_any()
             .downcast_ref::<HybridWatermark>()
-            .ok_or_else(|| TranscriptError::Fatal {
+            .ok_or_else(|| StreamError::Fatal {
                 message: format!(
                     "Droid reader requires HybridWatermark, got incompatible type for session {}",
                     session_id
@@ -138,15 +138,15 @@ impl Agent for DroidAgent {
         // Open file
         let file = File::open(path).map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
-                TranscriptError::Fatal {
+                StreamError::Fatal {
                     message: format!("Transcript file not found: {}", path.display()),
                 }
             } else if e.kind() == std::io::ErrorKind::PermissionDenied {
-                TranscriptError::Fatal {
+                StreamError::Fatal {
                     message: format!("Permission denied reading transcript: {}", path.display()),
                 }
             } else {
-                TranscriptError::Transient {
+                StreamError::Transient {
                     message: format!("Failed to open transcript file: {}", e),
                     retry_after: std::time::Duration::from_secs(5),
                 }
@@ -158,7 +158,7 @@ impl Agent for DroidAgent {
         // Seek to watermark position
         reader
             .seek(SeekFrom::Start(start_offset))
-            .map_err(|e| TranscriptError::Transient {
+            .map_err(|e| StreamError::Transient {
                 message: format!("Failed to seek to offset {}: {}", start_offset, e),
                 retry_after: std::time::Duration::from_secs(5),
             })?;
@@ -173,15 +173,15 @@ impl Agent for DroidAgent {
         // Read lines from watermark position
         let mut line = String::new();
         loop {
-            match crate::transcripts::types::read_jsonl_line(&mut reader, &mut line).map_err(
-                |e| TranscriptError::Transient {
+            match crate::streams::types::read_jsonl_line(&mut reader, &mut line).map_err(|e| {
+                StreamError::Transient {
                     message: format!("I/O error reading line: {}", e),
                     retry_after: std::time::Duration::from_secs(5),
-                },
-            )? {
-                crate::transcripts::types::JsonlLineState::Eof => break,
-                crate::transcripts::types::JsonlLineState::Partial => break,
-                crate::transcripts::types::JsonlLineState::Complete(bytes_read) => {
+                }
+            })? {
+                crate::streams::types::JsonlLineState::Eof => break,
+                crate::streams::types::JsonlLineState::Partial => break,
+                crate::streams::types::JsonlLineState::Complete(bytes_read) => {
                     line_number += 1;
                     current_offset += bytes_read as u64;
                 }
@@ -238,7 +238,7 @@ impl Agent for DroidAgent {
             latest_timestamp,
         ));
 
-        Ok(TranscriptBatch {
+        Ok(StreamBatch {
             events,
             new_watermark,
         })
@@ -250,13 +250,12 @@ impl Agent for DroidAgent {
         file_meta: &std::fs::Metadata,
         is_first_event: bool,
     ) -> u32 {
-        crate::daemon::transcript_worker::extract_event_timestamp(event).unwrap_or_else(|| {
-            crate::transcripts::agent::file_time_fallback(file_meta, is_first_event)
-        })
+        crate::daemon::transcript_worker::extract_event_timestamp(event)
+            .unwrap_or_else(|| crate::streams::agent::file_time_fallback(file_meta, is_first_event))
     }
 
     fn streams(&self) -> Vec<StreamDescriptor> {
-        let format = TranscriptFormat::DroidJsonl;
+        let format = StreamFormat::DroidJsonl;
         vec![StreamDescriptor {
             stream_kind: "transcript",
             format,

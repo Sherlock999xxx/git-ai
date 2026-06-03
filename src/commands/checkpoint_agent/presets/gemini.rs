@@ -1,7 +1,7 @@
 use super::parse;
 use super::{
     AgentPreset, ParsedHookEvent, PostBashCall, PostFileEdit, PreBashCall, PreFileEdit,
-    PresetContext, TranscriptFormat, TranscriptSource,
+    PresetContext, StreamFormat, TranscriptSource,
 };
 use crate::authorship::authorship_log_serialization::generate_session_id;
 use crate::authorship::working_log::AgentId;
@@ -32,9 +32,9 @@ impl AgentPreset for GeminiPreset {
             agent_id: AgentId {
                 tool: "gemini".to_string(),
                 id: session_id.clone(),
-                model: crate::transcripts::model_extraction::extract_model(
+                model: crate::streams::model_extraction::extract_model(
                     Path::new(transcript_path),
-                    crate::transcripts::sweep::TranscriptFormat::GeminiJsonl,
+                    crate::streams::sweep::StreamFormat::GeminiJsonl,
                     None,
                 )
                 .ok()
@@ -49,7 +49,7 @@ impl AgentPreset for GeminiPreset {
 
         let transcript_source = Some(TranscriptSource {
             path: PathBuf::from(transcript_path),
-            format: TranscriptFormat::GeminiJsonl,
+            format: StreamFormat::GeminiJsonl,
             session_id: generate_session_id(&context.external_session_id, "gemini"),
             external_session_id: context.external_session_id.clone(),
             external_parent_session_id: None,
@@ -141,7 +141,7 @@ mod tests {
                 assert!(matches!(
                     e.transcript_source,
                     Some(TranscriptSource {
-                        format: TranscriptFormat::GeminiJsonl,
+                        format: StreamFormat::GeminiJsonl,
                         ..
                     })
                 ));

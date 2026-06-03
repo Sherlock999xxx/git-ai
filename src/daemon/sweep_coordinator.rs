@@ -1,7 +1,7 @@
-use crate::transcripts::agent::{Agent, StreamDescriptor, get_all_agents};
-use crate::transcripts::db::{StreamRecord, StreamsDatabase};
-use crate::transcripts::sweep::{DiscoveredSession, SweepStrategy};
-use crate::transcripts::types::TranscriptError;
+use crate::streams::agent::{Agent, StreamDescriptor, get_all_agents};
+use crate::streams::db::{StreamRecord, StreamsDatabase};
+use crate::streams::sweep::{DiscoveredSession, SweepStrategy};
+use crate::streams::types::StreamError;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -44,7 +44,7 @@ impl SweepCoordinator {
     }
 
     /// Run a full sweep across all agents.
-    pub fn run_sweep(&self) -> Result<Vec<SweepItem>, TranscriptError> {
+    pub fn run_sweep(&self) -> Result<Vec<SweepItem>, StreamError> {
         let mut items = Vec::new();
 
         for (agent_type, agent) in &self.agent_registry {
@@ -114,7 +114,7 @@ impl SweepCoordinator {
         session: &DiscoveredSession,
         canonical_path: &Path,
         streams: &[StreamDescriptor],
-    ) -> Result<bool, TranscriptError> {
+    ) -> Result<bool, StreamError> {
         for stream in streams {
             let Some(path) = stream.resolve_path(canonical_path) else {
                 continue;
@@ -150,7 +150,7 @@ impl SweepCoordinator {
         stream: &StreamDescriptor,
         canonical_path: &Path,
         tool: &str,
-    ) -> Result<Option<SweepItem>, TranscriptError> {
+    ) -> Result<Option<SweepItem>, StreamError> {
         let Some(path) = stream.resolve_path(canonical_path) else {
             return Ok(None);
         };
@@ -165,8 +165,8 @@ impl SweepCoordinator {
         }))
     }
 
-    fn is_file_stale(path: &Path, existing: &StreamRecord) -> Result<bool, TranscriptError> {
-        let metadata = std::fs::metadata(path).map_err(|e| TranscriptError::Transient {
+    fn is_file_stale(path: &Path, existing: &StreamRecord) -> Result<bool, StreamError> {
+        let metadata = std::fs::metadata(path).map_err(|e| StreamError::Transient {
             message: format!("failed to stat {}: {}", path.display(), e),
             retry_after: std::time::Duration::from_secs(5),
         })?;

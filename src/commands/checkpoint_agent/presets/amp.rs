@@ -1,7 +1,7 @@
 use super::parse;
 use super::{
     AgentPreset, ParsedHookEvent, PostBashCall, PostFileEdit, PreBashCall, PreFileEdit,
-    PresetContext, TranscriptFormat, TranscriptSource,
+    PresetContext, StreamFormat, TranscriptSource,
 };
 use crate::authorship::authorship_log_serialization::generate_session_id;
 use crate::authorship::working_log::AgentId;
@@ -305,9 +305,9 @@ impl AgentPreset for AmpPreset {
                 model: resolved_transcript_path
                     .as_ref()
                     .and_then(|tp| {
-                        crate::transcripts::model_extraction::extract_model(
+                        crate::streams::model_extraction::extract_model(
                             tp,
-                            crate::transcripts::sweep::TranscriptFormat::AmpThreadJson,
+                            crate::streams::sweep::StreamFormat::AmpThreadJson,
                             None,
                         )
                         .ok()
@@ -323,7 +323,7 @@ impl AgentPreset for AmpPreset {
 
         let transcript_source = resolved_transcript_path.map(|path| TranscriptSource {
             path,
-            format: TranscriptFormat::AmpThreadJson,
+            format: StreamFormat::AmpThreadJson,
             session_id: generate_session_id(&context.external_session_id, "amp"),
             external_session_id: context.external_session_id.clone(),
             external_parent_session_id: None,

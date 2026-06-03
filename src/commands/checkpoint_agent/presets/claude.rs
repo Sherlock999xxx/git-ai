@@ -1,7 +1,7 @@
 use super::parse;
 use super::{
     AgentPreset, ParsedHookEvent, PostBashCall, PostFileEdit, PreBashCall, PreFileEdit,
-    PresetContext, TranscriptFormat, TranscriptSource,
+    PresetContext, StreamFormat, TranscriptSource,
 };
 use crate::authorship::authorship_log_serialization::generate_session_id;
 use crate::authorship::working_log::AgentId;
@@ -70,9 +70,9 @@ impl AgentPreset for ClaudePreset {
             agent_id: AgentId {
                 tool: "claude".to_string(),
                 id: session_id.clone(),
-                model: crate::transcripts::model_extraction::extract_model(
+                model: crate::streams::model_extraction::extract_model(
                     Path::new(transcript_path),
-                    crate::transcripts::sweep::TranscriptFormat::ClaudeJsonl,
+                    crate::streams::sweep::StreamFormat::ClaudeJsonl,
                     None,
                 )
                 .ok()
@@ -87,12 +87,12 @@ impl AgentPreset for ClaudePreset {
 
         let transcript_path_buf = PathBuf::from(transcript_path);
         let external_parent_session_id =
-            crate::transcripts::agents::claude::ClaudeAgent::detect_subagent_parent(
+            crate::streams::agents::claude::ClaudeAgent::detect_subagent_parent(
                 &transcript_path_buf,
             );
         let transcript_source = Some(TranscriptSource {
             path: transcript_path_buf,
-            format: TranscriptFormat::ClaudeJsonl,
+            format: StreamFormat::ClaudeJsonl,
             session_id: generate_session_id(&session_id, "claude"),
             external_session_id: session_id.clone(),
             external_parent_session_id,
@@ -180,7 +180,7 @@ mod tests {
                 );
                 assert!(e.transcript_source.is_some());
                 if let Some(ts) = &e.transcript_source {
-                    assert_eq!(ts.format, TranscriptFormat::ClaudeJsonl);
+                    assert_eq!(ts.format, StreamFormat::ClaudeJsonl);
                     assert_eq!(ts.session_id, generate_session_id("sess-1", "claude"));
                     assert_eq!(ts.external_session_id, "sess-1");
                 }

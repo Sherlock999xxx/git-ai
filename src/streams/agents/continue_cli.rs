@@ -1,20 +1,23 @@
-//! Amp agent implementation with sweep discovery.
+//! Continue CLI agent implementation with sweep discovery.
 
 use crate::authorship::authorship_log_serialization::generate_session_id;
-use crate::transcripts::agent::{Agent, PathResolverKind, StreamDescriptor};
-use crate::transcripts::sweep::{DiscoveredSession, SweepStrategy, TranscriptFormat};
-use crate::transcripts::types::{TranscriptBatch, TranscriptError};
-use crate::transcripts::watermark::{RecordIndexWatermark, WatermarkStrategy};
-use std::fs;
+use crate::streams::agent::{Agent, PathResolverKind, StreamDescriptor};
+use crate::streams::sweep::{DiscoveredSession, StreamFormat, SweepStrategy};
+use crate::streams::types::{StreamBatch, StreamError};
+use crate::streams::watermark::{RecordIndexWatermark, WatermarkStrategy};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-/// Amp agent that discovers conversations from Amp thread JSON files.
-pub struct AmpAgent {
+/// Continue CLI agent that reads Continue JSON transcript files.
+///
+/// Uses `RecordIndexWatermark` because the format has no timestamps at all.
+/// We track how many history entries we've already processed and skip that
+/// many on re-read.
+pub struct ContinueAgent {
     batch_size: usize,
 }
 
-impl AmpAgent {
+impl ContinueAgent {
     pub fn new() -> Self {
         Self { batch_size: 1000 }
     }
@@ -24,58 +27,36 @@ impl AmpAgent {
         Self { batch_size }
     }
 
-    /// Returns the path to Amp thread files.
-    ///
-    /// Checks `GIT_AI_AMP_THREADS_PATH` env var first, then falls back to
-    /// platform-specific default locations.
-    pub fn amp_threads_path() -> Result<PathBuf, TranscriptError> {
-        if let Ok(path) = std::env::var("GIT_AI_AMP_THREADS_PATH") {
-            return Ok(PathBuf::from(path));
-        }
+    /// Scan for Continue session files in `~/.continue/sessions/**/*.json`.
+    fn scan_session_files() -> Vec<PathBuf> {
+        let mut paths = Vec::new();
 
-        #[cfg(target_os = "macos")]
-        {
-            if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
-                return Ok(PathBuf::from(xdg).join("amp/threads"));
-            }
-            if let Some(home) = dirs::home_dir() {
-                return Ok(home.join(".local/share/amp/threads"));
-            }
-        }
+        if let Some(home) = dirs::home_dir() {
+            let pattern = home
+                .join(".continue/sessions/**/*.json")
+                .to_string_lossy()
+                .to_string();
 
-        #[cfg(target_os = "linux")]
-        {
-            if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
-                return Ok(PathBuf::from(xdg).join("amp/threads"));
-            }
-            if let Some(home) = dirs::home_dir() {
-                return Ok(home.join(".local/share/amp/threads"));
+            if let Ok(entries) = glob::glob(&pattern) {
+                for entry in entries.flatten() {
+                    if entry.is_file() {
+                        paths.push(entry);
+                    }
+                }
             }
         }
 
-        #[cfg(target_os = "windows")]
-        {
-            if let Ok(local) = std::env::var("LOCALAPPDATA") {
-                return Ok(PathBuf::from(local).join("amp/threads"));
-            }
-            if let Ok(appdata) = std::env::var("APPDATA") {
-                return Ok(PathBuf::from(appdata).join("amp/threads"));
-            }
-        }
-
-        Err(TranscriptError::Fatal {
-            message: "Could not determine Amp threads path".to_string(),
-        })
+        paths
     }
 }
 
-impl Default for AmpAgent {
+impl Default for ContinueAgent {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl Agent for AmpAgent {
+impl Agent for ContinueAgent {
     fn batch_size_hint(&self) -> usize {
         self.batch_size
     }
@@ -84,43 +65,26 @@ impl Agent for AmpAgent {
         SweepStrategy::Periodic(Duration::from_secs(30 * 60))
     }
 
-    fn discover_sessions(&self) -> Result<Vec<DiscoveredSession>, TranscriptError> {
-        let threads_dir = match Self::amp_threads_path() {
-            Ok(p) => p,
-            Err(_) => return Ok(Vec::new()),
-        };
-
-        if !threads_dir.exists() {
-            return Ok(Vec::new());
-        }
-
-        let entries = fs::read_dir(&threads_dir).map_err(|e| TranscriptError::Transient {
-            message: format!("Failed to read Amp threads directory: {}", e),
-            retry_after: Duration::from_secs(30),
-        })?;
-
+    fn discover_sessions(&self) -> Result<Vec<DiscoveredSession>, StreamError> {
+        let paths = Self::scan_session_files();
         let mut sessions = Vec::new();
 
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if !path.is_file() || path.extension().and_then(|e| e.to_str()) != Some("json") {
-                continue;
-            }
-
-            let Some(file_stem) = path
+        for path in paths {
+            // Continue session_id from the hook payload matches the file stem
+            let Some(external_session_id) = path
                 .file_stem()
                 .and_then(|s| s.to_str())
                 .map(|s| s.to_string())
             else {
                 continue;
             };
+            let session_id = generate_session_id(&external_session_id, "continue-cli");
 
-            let session_id = generate_session_id(&file_stem, "amp");
             let session = DiscoveredSession {
                 session_id,
-                tool: "amp".to_string(),
+                tool: "continue-cli".to_string(),
                 transcript_path: path,
-                external_session_id: file_stem,
+                external_session_id,
                 external_parent_session_id: None,
             };
 
@@ -135,31 +99,31 @@ impl Agent for AmpAgent {
         path: &Path,
         watermark: Box<dyn WatermarkStrategy>,
         session_id: &str,
-    ) -> Result<TranscriptBatch, TranscriptError> {
+    ) -> Result<StreamBatch, StreamError> {
         // Downcast watermark to RecordIndexWatermark
         let record_watermark = watermark
             .as_any()
             .downcast_ref::<RecordIndexWatermark>()
-            .ok_or_else(|| TranscriptError::Fatal {
+            .ok_or_else(|| StreamError::Fatal {
                 message: format!(
-                    "Amp reader requires RecordIndexWatermark, got incompatible type for session {}",
+                    "Continue reader requires RecordIndexWatermark, got incompatible type for session {}",
                     session_id
                 ),
             })?;
 
-        let skip_count = record_watermark.0 as usize;
+        let already_processed = record_watermark.0;
 
-        let file = fs::File::open(path).map_err(|e| {
+        let file = std::fs::File::open(path).map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
-                TranscriptError::Fatal {
+                StreamError::Fatal {
                     message: format!("Transcript file not found: {}", path.display()),
                 }
             } else if e.kind() == std::io::ErrorKind::PermissionDenied {
-                TranscriptError::Fatal {
+                StreamError::Fatal {
                     message: format!("Permission denied reading transcript: {}", path.display()),
                 }
             } else {
-                TranscriptError::Transient {
+                StreamError::Transient {
                     message: format!("Failed to read transcript file: {}", e),
                     retry_after: Duration::from_secs(5),
                 }
@@ -168,20 +132,17 @@ impl Agent for AmpAgent {
 
         let reader = std::io::BufReader::new(file);
         let mut parsed: serde_json::Value =
-            serde_json::from_reader(reader).map_err(|e| TranscriptError::Parse {
+            serde_json::from_reader(reader).map_err(|e| StreamError::Parse {
                 line: 0,
                 message: format!("Invalid JSON in {}: {}", path.display(), e),
             })?;
 
-        let messages = match parsed
-            .as_object_mut()
-            .and_then(|obj| obj.remove("messages"))
-        {
+        let history = match parsed.as_object_mut().and_then(|obj| obj.remove("history")) {
             Some(serde_json::Value::Array(arr)) => arr,
             _ => {
-                return Err(TranscriptError::Fatal {
+                return Err(StreamError::Fatal {
                     message: format!(
-                        "Missing 'messages' array in Amp thread file: {}",
+                        "Missing 'history' array in Continue transcript: {}",
                         path.display()
                     ),
                 });
@@ -190,18 +151,17 @@ impl Agent for AmpAgent {
 
         let batch_limit = self.batch_size_hint();
 
-        // Skip first `skip_count` messages (already processed), take up to batch_limit
-        let events: Vec<serde_json::Value> = messages
+        let events: Vec<serde_json::Value> = history
             .into_iter()
-            .skip(skip_count)
+            .skip(already_processed as usize)
             .take(batch_limit)
             .collect();
 
         let new_watermark = Box::new(RecordIndexWatermark::new(
-            (skip_count + events.len()) as u64,
+            already_processed + events.len() as u64,
         ));
 
-        Ok(TranscriptBatch {
+        Ok(StreamBatch {
             events,
             new_watermark,
         })
@@ -209,17 +169,15 @@ impl Agent for AmpAgent {
 
     fn extract_event_timestamp(
         &self,
-        event: &serde_json::Value,
+        _event: &serde_json::Value,
         file_meta: &std::fs::Metadata,
         is_first_event: bool,
     ) -> u32 {
-        crate::daemon::transcript_worker::extract_event_timestamp(event).unwrap_or_else(|| {
-            crate::transcripts::agent::file_time_fallback(file_meta, is_first_event)
-        })
+        crate::streams::agent::file_time_fallback(file_meta, is_first_event)
     }
 
     fn streams(&self) -> Vec<StreamDescriptor> {
-        let format = TranscriptFormat::AmpThreadJson;
+        let format = StreamFormat::ContinueJson;
         vec![StreamDescriptor {
             stream_kind: "transcript",
             format,
@@ -238,30 +196,27 @@ mod tests {
 
     #[test]
     fn test_sweep_strategy() {
-        let agent = AmpAgent::new();
+        let agent = ContinueAgent::new();
         assert_eq!(
             agent.sweep_strategy(),
             SweepStrategy::Periodic(Duration::from_secs(30 * 60))
         );
     }
 
-    fn make_amp_json(message_count: usize) -> String {
-        let messages: Vec<String> = (0..message_count)
+    fn make_continue_json(count: usize) -> String {
+        let items: Vec<String> = (0..count)
             .map(|i| {
                 format!(
-                    r#"{{"role":"user","id":{},"content":[{{"type":"text","text":"msg-{}"}}]}}"#,
+                    r#"{{"id":{},"message":{{"role":"user","content":"msg-{}"}}}}"#,
                     i, i
                 )
             })
             .collect();
-        format!(
-            r#"{{"id":"thread-test","messages":[{}]}}"#,
-            messages.join(",")
-        )
+        format!(r#"{{"history":[{}]}}"#, items.join(","))
     }
 
     fn drain_all(
-        agent: &AmpAgent,
+        agent: &ContinueAgent,
         path: &Path,
     ) -> (Vec<serde_json::Value>, Box<dyn WatermarkStrategy>) {
         let mut all = Vec::new();
@@ -283,10 +238,10 @@ mod tests {
         use tempfile::NamedTempFile;
 
         let mut file = NamedTempFile::new().unwrap();
-        std::io::Write::write_all(&mut file, make_amp_json(5).as_bytes()).unwrap();
+        std::io::Write::write_all(&mut file, make_continue_json(5).as_bytes()).unwrap();
         std::io::Write::flush(&mut file).unwrap();
 
-        let agent = AmpAgent::with_batch_size(2);
+        let agent = ContinueAgent::with_batch_size(2);
         let (events, _) = drain_all(&agent, file.path());
 
         assert_eq!(events.len(), 5);
@@ -299,14 +254,14 @@ mod tests {
         use tempfile::NamedTempFile;
 
         let mut file = NamedTempFile::new().unwrap();
-        std::io::Write::write_all(&mut file, make_amp_json(3).as_bytes()).unwrap();
+        std::io::Write::write_all(&mut file, make_continue_json(3).as_bytes()).unwrap();
         std::io::Write::flush(&mut file).unwrap();
 
-        let agent = AmpAgent::with_batch_size(2);
+        let agent = ContinueAgent::with_batch_size(2);
         let (all, wm) = drain_all(&agent, file.path());
         assert_eq!(all.len(), 3);
 
-        std::fs::write(file.path(), make_amp_json(4)).unwrap();
+        std::fs::write(file.path(), make_continue_json(4)).unwrap();
 
         let batch = agent.read_incremental(file.path(), wm, "test").unwrap();
         assert_eq!(batch.events.len(), 1);
@@ -318,13 +273,13 @@ mod tests {
         use tempfile::NamedTempFile;
 
         let mut file = NamedTempFile::new().unwrap();
-        std::io::Write::write_all(&mut file, make_amp_json(3).as_bytes()).unwrap();
+        std::io::Write::write_all(&mut file, make_continue_json(3).as_bytes()).unwrap();
         std::io::Write::flush(&mut file).unwrap();
 
-        let agent = AmpAgent::with_batch_size(2);
+        let agent = ContinueAgent::with_batch_size(2);
         let (_, mut wm) = drain_all(&agent, file.path());
 
-        std::fs::write(file.path(), make_amp_json(6)).unwrap();
+        std::fs::write(file.path(), make_continue_json(6)).unwrap();
 
         let mut new_events = Vec::new();
         loop {
@@ -349,18 +304,9 @@ mod tests {
         use tempfile::NamedTempFile;
 
         let json = serde_json::json!({
-            "id": "thread-123",
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [{"type": "text", "text": "Hello"}],
-                    "meta": {"sentAt": 1704067200000i64}
-                },
-                {
-                    "role": "assistant",
-                    "content": [{"type": "text", "text": "Hi"}],
-                    "usage": {"model": "claude-sonnet-4-20250514", "timestamp": "2025-01-01T00:00:01Z"}
-                }
+            "history": [
+                {"message": {"role": "user", "content": "Hello"}},
+                {"message": {"role": "assistant", "content": "Hi there"}}
             ]
         });
 
@@ -368,31 +314,28 @@ mod tests {
         write!(file, "{}", json).unwrap();
         file.flush().unwrap();
 
-        let agent = AmpAgent::new();
+        let agent = ContinueAgent::new();
         let watermark = Box::new(RecordIndexWatermark::new(0));
         let result = agent
             .read_incremental(file.path(), watermark, "test")
             .unwrap();
 
         assert_eq!(result.events.len(), 2);
-        assert_eq!(result.events[0]["role"], "user");
-        assert_eq!(result.events[1]["role"], "assistant");
-        assert_eq!(
-            result.events[1]["usage"]["model"],
-            "claude-sonnet-4-20250514"
-        );
+        // Raw history items are returned
+        assert_eq!(result.events[0]["message"]["role"], "user");
+        assert_eq!(result.events[1]["message"]["role"], "assistant");
     }
 
     #[test]
-    fn test_read_incremental_skips_processed() {
+    fn test_read_incremental_skips_already_processed() {
         use std::io::Write;
         use tempfile::NamedTempFile;
 
         let json = serde_json::json!({
-            "id": "thread-123",
-            "messages": [
-                {"role": "user", "content": [{"type": "text", "text": "Old"}]},
-                {"role": "user", "content": [{"type": "text", "text": "New"}]}
+            "history": [
+                {"message": {"role": "user", "content": "Old"}},
+                {"message": {"role": "assistant", "content": "Old reply"}},
+                {"message": {"role": "user", "content": "New"}}
             ]
         });
 
@@ -400,30 +343,27 @@ mod tests {
         write!(file, "{}", json).unwrap();
         file.flush().unwrap();
 
-        let agent = AmpAgent::new();
-        let watermark = Box::new(RecordIndexWatermark::new(1));
+        let agent = ContinueAgent::new();
+        let watermark = Box::new(RecordIndexWatermark::new(2)); // Already processed 2
         let result = agent
             .read_incremental(file.path(), watermark, "test")
             .unwrap();
 
-        assert_eq!(result.events.len(), 1);
-        assert_eq!(result.events[0]["content"][0]["text"], "New");
+        assert_eq!(result.events.len(), 1); // Only the new message
+        assert_eq!(result.events[0]["message"]["content"], "New");
     }
 
     #[test]
-    fn test_read_incremental_thinking_and_tool_use() {
+    fn test_read_incremental_with_context_items() {
         use std::io::Write;
         use tempfile::NamedTempFile;
 
         let json = serde_json::json!({
-            "id": "thread-456",
-            "messages": [
+            "history": [
                 {
-                    "role": "assistant",
-                    "content": [
-                        {"type": "thinking", "thinking": "Let me think..."},
-                        {"type": "text", "text": "Here's the result"},
-                        {"type": "tool_use", "id": "tu-1", "name": "bash", "input": {}}
+                    "message": {"role": "assistant", "content": "Let me check"},
+                    "contextItems": [
+                        {"name": "file_reader", "content": "some data"}
                     ]
                 }
             ]
@@ -433,19 +373,15 @@ mod tests {
         write!(file, "{}", json).unwrap();
         file.flush().unwrap();
 
-        let agent = AmpAgent::new();
+        let agent = ContinueAgent::new();
         let watermark = Box::new(RecordIndexWatermark::new(0));
         let result = agent
             .read_incremental(file.path(), watermark, "test")
             .unwrap();
 
-        // One raw message containing all content items
+        // One raw history item containing both message and contextItems
         assert_eq!(result.events.len(), 1);
-        assert_eq!(result.events[0]["role"], "assistant");
-        let content = result.events[0]["content"].as_array().unwrap();
-        assert_eq!(content.len(), 3);
-        assert_eq!(content[0]["type"], "thinking");
-        assert_eq!(content[1]["type"], "text");
-        assert_eq!(content[2]["type"], "tool_use");
+        assert_eq!(result.events[0]["message"]["content"], "Let me check");
+        assert!(result.events[0]["contextItems"].is_array());
     }
 }

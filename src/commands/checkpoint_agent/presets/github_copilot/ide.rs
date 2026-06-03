@@ -1,13 +1,13 @@
 use super::super::parse;
 use super::super::{
     ParsedHookEvent, PostBashCall, PostFileEdit, PreBashCall, PreFileEdit, PresetContext,
-    TranscriptFormat, TranscriptSource,
+    StreamFormat, TranscriptSource,
 };
 use crate::authorship::authorship_log_serialization::generate_session_id;
 use crate::authorship::working_log::AgentId;
 use crate::commands::checkpoint_agent::bash_tool::ToolClass;
 use crate::error::GitAiError;
-use crate::transcripts::model_extraction;
+use crate::streams::model_extraction;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -107,7 +107,7 @@ pub(super) fn parse_legacy_extension_hooks(
             id: session_id.clone(),
             model: model_extraction::extract_model(
                 Path::new(chat_session_path),
-                crate::transcripts::sweep::TranscriptFormat::CopilotSessionJson,
+                crate::streams::sweep::StreamFormat::CopilotSessionJson,
                 None,
             )
             .ok()
@@ -122,7 +122,7 @@ pub(super) fn parse_legacy_extension_hooks(
 
     let transcript_source = Some(TranscriptSource {
         path: PathBuf::from(chat_session_path),
-        format: TranscriptFormat::CopilotSessionJson,
+        format: StreamFormat::CopilotSessionJson,
         session_id: generate_session_id(&context.external_session_id, "github-copilot"),
         external_session_id: context.external_session_id.clone(),
         external_parent_session_id: None,
@@ -210,9 +210,9 @@ pub(super) fn parse_vscode_native_hooks(
         .map(|p| p.contains("/workspaceStorage/") || p.contains("\\workspaceStorage\\"))
         .unwrap_or(false)
     {
-        TranscriptFormat::CopilotEventStreamJsonl
+        StreamFormat::CopilotEventStreamJsonl
     } else {
-        TranscriptFormat::CopilotSessionJson
+        StreamFormat::CopilotSessionJson
     };
 
     let context = PresetContext {
@@ -224,10 +224,10 @@ pub(super) fn parse_vscode_native_hooks(
                 .and_then(|tp| {
                     let path = Path::new(tp.as_str());
                     let sweep_format = match transcript_format {
-                        TranscriptFormat::CopilotEventStreamJsonl => {
-                            crate::transcripts::sweep::TranscriptFormat::CopilotEventStreamJsonl
+                        StreamFormat::CopilotEventStreamJsonl => {
+                            crate::streams::sweep::StreamFormat::CopilotEventStreamJsonl
                         }
-                        _ => crate::transcripts::sweep::TranscriptFormat::CopilotSessionJson,
+                        _ => crate::streams::sweep::StreamFormat::CopilotSessionJson,
                     };
                     model_extraction::extract_model(path, sweep_format, None)
                         .ok()
@@ -534,7 +534,7 @@ mod tests {
                 assert!(matches!(
                     e.transcript_source,
                     Some(TranscriptSource {
-                        format: TranscriptFormat::CopilotSessionJson,
+                        format: StreamFormat::CopilotSessionJson,
                         ..
                     })
                 ));
@@ -615,7 +615,7 @@ mod tests {
                 assert!(matches!(
                     e.transcript_source,
                     Some(TranscriptSource {
-                        format: TranscriptFormat::CopilotSessionJson,
+                        format: StreamFormat::CopilotSessionJson,
                         ..
                     })
                 ));
@@ -879,7 +879,7 @@ mod tests {
                 assert!(matches!(
                     e.transcript_source,
                     Some(TranscriptSource {
-                        format: TranscriptFormat::CopilotEventStreamJsonl,
+                        format: StreamFormat::CopilotEventStreamJsonl,
                         ..
                     })
                 ));

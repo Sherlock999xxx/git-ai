@@ -1,20 +1,22 @@
-//! Cursor agent implementation with sweep discovery.
+//! Gemini agent implementation with sweep discovery.
 
 use crate::authorship::authorship_log_serialization::generate_session_id;
-use crate::transcripts::agent::{Agent, PathResolverKind, StreamDescriptor};
-use crate::transcripts::sweep::{DiscoveredSession, SweepStrategy, TranscriptFormat};
-use crate::transcripts::types::{TranscriptBatch, TranscriptError};
-use crate::transcripts::watermark::{ByteOffsetWatermark, WatermarkStrategy};
+use crate::streams::agent::{Agent, PathResolverKind, StreamDescriptor};
+use crate::streams::sweep::{DiscoveredSession, StreamFormat, SweepStrategy};
+use crate::streams::types::{StreamBatch, StreamError};
+use crate::streams::watermark::{ByteOffsetWatermark, WatermarkStrategy};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-/// Cursor agent that discovers conversations from Cursor storage.
-pub struct CursorAgent {
+/// Gemini agent that discovers conversations from Gemini CLI session storage.
+///
+/// Gemini CLI stores JSONL chat transcripts under `~/.gemini/tmp/<project>/chats/`.
+pub struct GeminiAgent {
     batch_size: usize,
 }
 
-impl CursorAgent {
+impl GeminiAgent {
     pub fn new() -> Self {
         Self { batch_size: 1000 }
     }
@@ -24,68 +26,67 @@ impl CursorAgent {
         Self { batch_size }
     }
 
-    /// Scan for Cursor conversation files in standard locations.
-    fn scan_conversation_files() -> Vec<PathBuf> {
+    /// Scan for Gemini session files in standard locations.
+    ///
+    /// Searches `~/.gemini/tmp/*/chats/session-*.jsonl`.
+    fn scan_session_files() -> Vec<PathBuf> {
         let mut paths = Vec::new();
 
-        let base_dir = if let Ok(config_dir) = std::env::var("CURSOR_CONFIG_DIR") {
-            Some(PathBuf::from(config_dir))
-        } else {
-            dirs::home_dir().map(|p| p.join(".cursor"))
-        };
-
-        let search_dirs = vec![base_dir.as_ref().map(|p| p.join("projects"))];
-
-        for dir_opt in search_dirs {
-            if let Some(dir) = dir_opt
-                && dir.exists()
-            {
-                Self::scan_jsonl_recursive(&dir, &mut paths);
+        if let Some(gemini_tmp) = dirs::home_dir().map(|p| p.join(".gemini/tmp"))
+            && gemini_tmp.exists()
+        {
+            let Ok(project_dirs) = fs::read_dir(&gemini_tmp) else {
+                return paths;
+            };
+            for project_entry in project_dirs.flatten() {
+                let chats_dir = project_entry.path().join("chats");
+                if !chats_dir.is_dir() {
+                    continue;
+                }
+                let Ok(chat_files) = fs::read_dir(&chats_dir) else {
+                    continue;
+                };
+                for file_entry in chat_files.flatten() {
+                    let path = file_entry.path();
+                    if path.is_file()
+                        && path.extension().map(|ext| ext == "jsonl").unwrap_or(false)
+                        && path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .map(|n| n.starts_with("session-"))
+                            .unwrap_or(false)
+                    {
+                        paths.push(path);
+                    }
+                }
             }
         }
 
         paths
     }
-
-    fn scan_jsonl_recursive(dir: &Path, paths: &mut Vec<PathBuf>) {
-        let Ok(entries) = fs::read_dir(dir) else {
-            return;
-        };
-
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                Self::scan_jsonl_recursive(&path, paths);
-            } else if path.is_file() && path.extension().map(|ext| ext == "jsonl").unwrap_or(false)
-            {
-                paths.push(path);
-            }
-        }
-    }
 }
 
-impl Default for CursorAgent {
+impl Default for GeminiAgent {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl Agent for CursorAgent {
+impl Agent for GeminiAgent {
     fn batch_size_hint(&self) -> usize {
         self.batch_size
     }
 
     fn sweep_strategy(&self) -> SweepStrategy {
-        // Poll every 30 minutes for new Cursor conversations
         SweepStrategy::Periodic(Duration::from_secs(30 * 60))
     }
 
-    fn discover_sessions(&self) -> Result<Vec<DiscoveredSession>, TranscriptError> {
-        let paths = Self::scan_conversation_files();
+    fn discover_sessions(&self) -> Result<Vec<DiscoveredSession>, StreamError> {
+        let paths = Self::scan_session_files();
         let mut sessions = Vec::new();
 
         for path in paths {
-            // Cursor conversation_id is the file stem
+            // Gemini session_id from the hook payload matches the file stem
             let Some(external_session_id) = path
                 .file_stem()
                 .and_then(|s| s.to_str())
@@ -93,11 +94,11 @@ impl Agent for CursorAgent {
             else {
                 continue;
             };
-            let session_id = generate_session_id(&external_session_id, "cursor");
+            let session_id = generate_session_id(&external_session_id, "gemini");
 
             let session = DiscoveredSession {
                 session_id,
-                tool: "cursor".to_string(),
+                tool: "gemini".to_string(),
                 transcript_path: path,
                 external_session_id,
                 external_parent_session_id: None,
@@ -114,16 +115,16 @@ impl Agent for CursorAgent {
         path: &Path,
         watermark: Box<dyn WatermarkStrategy>,
         session_id: &str,
-    ) -> Result<TranscriptBatch, TranscriptError> {
+    ) -> Result<StreamBatch, StreamError> {
         use std::fs::File;
         use std::io::{BufReader, Seek, SeekFrom};
 
         let byte_watermark = watermark
             .as_any()
             .downcast_ref::<ByteOffsetWatermark>()
-            .ok_or_else(|| TranscriptError::Fatal {
+            .ok_or_else(|| StreamError::Fatal {
                 message: format!(
-                    "Cursor reader requires ByteOffsetWatermark, got incompatible type for session {}",
+                    "Gemini reader requires ByteOffsetWatermark, got incompatible type for session {}",
                     session_id
                 ),
             })?;
@@ -132,17 +133,17 @@ impl Agent for CursorAgent {
 
         let file = File::open(path).map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
-                TranscriptError::Fatal {
+                StreamError::Fatal {
                     message: format!("Transcript file not found: {}", path.display()),
                 }
             } else if e.kind() == std::io::ErrorKind::PermissionDenied {
-                TranscriptError::Fatal {
+                StreamError::Fatal {
                     message: format!("Permission denied reading transcript: {}", path.display()),
                 }
             } else {
-                TranscriptError::Transient {
-                    message: format!("Failed to open transcript file: {}", e),
-                    retry_after: std::time::Duration::from_secs(5),
+                StreamError::Transient {
+                    message: format!("Failed to read transcript file: {}", e),
+                    retry_after: Duration::from_secs(5),
                 }
             }
         })?;
@@ -151,9 +152,9 @@ impl Agent for CursorAgent {
 
         reader
             .seek(SeekFrom::Start(start_offset))
-            .map_err(|e| TranscriptError::Transient {
+            .map_err(|e| StreamError::Transient {
                 message: format!("Failed to seek to offset {}: {}", start_offset, e),
-                retry_after: std::time::Duration::from_secs(5),
+                retry_after: Duration::from_secs(5),
             })?;
 
         let batch_limit = self.batch_size_hint();
@@ -163,15 +164,15 @@ impl Agent for CursorAgent {
 
         let mut line = String::new();
         loop {
-            match crate::transcripts::types::read_jsonl_line(&mut reader, &mut line).map_err(
-                |e| TranscriptError::Transient {
+            match crate::streams::types::read_jsonl_line(&mut reader, &mut line).map_err(|e| {
+                StreamError::Transient {
                     message: format!("I/O error reading line: {}", e),
-                    retry_after: std::time::Duration::from_secs(5),
-                },
-            )? {
-                crate::transcripts::types::JsonlLineState::Eof => break,
-                crate::transcripts::types::JsonlLineState::Partial => break,
-                crate::transcripts::types::JsonlLineState::Complete(bytes_read) => {
+                    retry_after: Duration::from_secs(5),
+                }
+            })? {
+                crate::streams::types::JsonlLineState::Eof => break,
+                crate::streams::types::JsonlLineState::Partial => break,
+                crate::streams::types::JsonlLineState::Complete(bytes_read) => {
                     line_number += 1;
                     current_offset += bytes_read as u64;
                 }
@@ -202,7 +203,7 @@ impl Agent for CursorAgent {
 
         let new_watermark = Box::new(ByteOffsetWatermark::new(current_offset));
 
-        Ok(TranscriptBatch {
+        Ok(StreamBatch {
             events,
             new_watermark,
         })
@@ -210,15 +211,16 @@ impl Agent for CursorAgent {
 
     fn extract_event_timestamp(
         &self,
-        _event: &serde_json::Value,
+        event: &serde_json::Value,
         file_meta: &std::fs::Metadata,
         is_first_event: bool,
     ) -> u32 {
-        crate::transcripts::agent::file_time_fallback(file_meta, is_first_event)
+        crate::daemon::transcript_worker::extract_event_timestamp(event)
+            .unwrap_or_else(|| crate::streams::agent::file_time_fallback(file_meta, is_first_event))
     }
 
     fn streams(&self) -> Vec<StreamDescriptor> {
-        let format = TranscriptFormat::CursorJsonl;
+        let format = StreamFormat::GeminiJsonl;
         vec![StreamDescriptor {
             stream_kind: "transcript",
             format,
@@ -237,22 +239,22 @@ mod tests {
 
     #[test]
     fn test_sweep_strategy() {
-        let agent = CursorAgent::new();
+        let agent = GeminiAgent::new();
         assert_eq!(
             agent.sweep_strategy(),
             SweepStrategy::Periodic(Duration::from_secs(30 * 60))
         );
     }
 
-    fn make_jsonl_line(i: usize) -> String {
+    fn make_gemini_line(i: usize) -> String {
         format!(
-            r#"{{"role":"user","id":{},"message":{{"content":[{{"type":"text","text":"msg-{}"}}]}}}}"#,
-            i, i
+            r#"{{"id":"msg-{}","timestamp":"2026-05-03T02:{:02}:00.000Z","type":"gemini","content":"msg-{}","model":"gemini-3-flash-preview"}}"#,
+            i, i, i
         )
     }
 
     fn drain_all(
-        agent: &CursorAgent,
+        agent: &GeminiAgent,
         path: &Path,
     ) -> (Vec<serde_json::Value>, Box<dyn WatermarkStrategy>) {
         let mut all = Vec::new();
@@ -276,16 +278,16 @@ mod tests {
 
         let mut file = NamedTempFile::new().unwrap();
         for i in 0..5 {
-            writeln!(file, "{}", make_jsonl_line(i)).unwrap();
+            writeln!(file, "{}", make_gemini_line(i)).unwrap();
         }
         file.flush().unwrap();
 
-        let agent = CursorAgent::with_batch_size(2);
+        let agent = GeminiAgent::with_batch_size(2);
         let (events, _) = drain_all(&agent, file.path());
 
         assert_eq!(events.len(), 5);
-        let ids: Vec<u64> = events.iter().map(|e| e["id"].as_u64().unwrap()).collect();
-        assert_eq!(ids, vec![0, 1, 2, 3, 4]);
+        let ids: Vec<&str> = events.iter().map(|e| e["id"].as_str().unwrap()).collect();
+        assert_eq!(ids, vec!["msg-0", "msg-1", "msg-2", "msg-3", "msg-4"]);
     }
 
     #[test]
@@ -296,21 +298,21 @@ mod tests {
 
         let mut file = NamedTempFile::new().unwrap();
         for i in 0..3 {
-            writeln!(file, "{}", make_jsonl_line(i)).unwrap();
+            writeln!(file, "{}", make_gemini_line(i)).unwrap();
         }
         file.flush().unwrap();
 
-        let agent = CursorAgent::with_batch_size(2);
+        let agent = GeminiAgent::with_batch_size(2);
         let (all, wm) = drain_all(&agent, file.path());
         assert_eq!(all.len(), 3);
 
         let mut f = OpenOptions::new().append(true).open(file.path()).unwrap();
-        writeln!(f, "{}", make_jsonl_line(3)).unwrap();
+        writeln!(f, "{}", make_gemini_line(3)).unwrap();
         f.flush().unwrap();
 
         let batch = agent.read_incremental(file.path(), wm, "test").unwrap();
         assert_eq!(batch.events.len(), 1);
-        assert_eq!(batch.events[0]["id"].as_u64().unwrap(), 3);
+        assert_eq!(batch.events[0]["id"].as_str().unwrap(), "msg-3");
     }
 
     #[test]
@@ -321,16 +323,16 @@ mod tests {
 
         let mut file = NamedTempFile::new().unwrap();
         for i in 0..3 {
-            writeln!(file, "{}", make_jsonl_line(i)).unwrap();
+            writeln!(file, "{}", make_gemini_line(i)).unwrap();
         }
         file.flush().unwrap();
 
-        let agent = CursorAgent::with_batch_size(2);
+        let agent = GeminiAgent::with_batch_size(2);
         let (_, mut wm) = drain_all(&agent, file.path());
 
         let mut f = OpenOptions::new().append(true).open(file.path()).unwrap();
         for i in 3..6 {
-            writeln!(f, "{}", make_jsonl_line(i)).unwrap();
+            writeln!(f, "{}", make_gemini_line(i)).unwrap();
         }
         f.flush().unwrap();
 
@@ -344,11 +346,11 @@ mod tests {
             new_events.extend(batch.events);
         }
         assert_eq!(new_events.len(), 3);
-        let ids: Vec<u64> = new_events
+        let ids: Vec<&str> = new_events
             .iter()
-            .map(|e| e["id"].as_u64().unwrap())
+            .map(|e| e["id"].as_str().unwrap())
             .collect();
-        assert_eq!(ids, vec![3, 4, 5]);
+        assert_eq!(ids, vec!["msg-3", "msg-4", "msg-5"]);
     }
 
     #[test]
@@ -357,26 +359,69 @@ mod tests {
         use tempfile::NamedTempFile;
 
         let mut file = NamedTempFile::new().unwrap();
+        writeln!(file, r#"{{"id":"msg-1","timestamp":"2026-05-03T02:36:28.771Z","type":"user","content":[{{"text":"Hello"}}]}}"#).unwrap();
+        writeln!(file, r#"{{"id":"msg-2","timestamp":"2026-05-03T02:36:32.428Z","type":"gemini","content":"Hi there","model":"gemini-3-flash-preview"}}"#).unwrap();
+        file.flush().unwrap();
+
+        let agent = GeminiAgent::new();
+        let watermark = Box::new(ByteOffsetWatermark::new(0));
+        let result = agent
+            .read_incremental(file.path(), watermark, "test")
+            .unwrap();
+
+        assert_eq!(result.events.len(), 2);
+        assert_eq!(result.events[0]["type"], "user");
+        assert_eq!(result.events[1]["type"], "gemini");
+        assert_eq!(result.events[1]["model"], "gemini-3-flash-preview");
+    }
+
+    #[test]
+    fn test_read_incremental_skips_empty_lines() {
+        use std::io::Write;
+        use tempfile::NamedTempFile;
+
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(file, r#"{{"type":"user","content":[{{"text":"Hello"}}]}}"#).unwrap();
+        writeln!(file).unwrap();
         writeln!(
             file,
-            r#"{{"role":"user","message":{{"content":[{{"type":"text","text":"Hello"}}]}}}}"#
-        )
-        .unwrap();
-        writeln!(
-            file,
-            r#"{{"role":"assistant","message":{{"content":[{{"type":"text","text":"Hi there"}}]}}}}"#
+            r#"{{"type":"gemini","content":"Hi","model":"gemini-3-flash-preview"}}"#
         )
         .unwrap();
         file.flush().unwrap();
 
-        let agent = CursorAgent::new();
+        let agent = GeminiAgent::new();
         let watermark = Box::new(ByteOffsetWatermark::new(0));
         let result = agent
-            .read_incremental(file.path(), watermark, "test-session")
+            .read_incremental(file.path(), watermark, "test")
             .unwrap();
 
         assert_eq!(result.events.len(), 2);
-        assert_eq!(result.events[0]["role"].as_str(), Some("user"));
-        assert_eq!(result.events[1]["role"].as_str(), Some("assistant"));
+    }
+
+    #[test]
+    fn test_read_incremental_resumes_from_offset() {
+        use std::io::Write;
+        use tempfile::NamedTempFile;
+
+        let mut file = NamedTempFile::new().unwrap();
+        let line1 = r#"{"type":"user","content":[{"text":"First"}]}"#;
+        let line2 = r#"{"type":"gemini","content":"Second","model":"gemini-3-flash-preview"}"#;
+        writeln!(file, "{}", line1).unwrap();
+        writeln!(file, "{}", line2).unwrap();
+        file.flush().unwrap();
+
+        let agent = GeminiAgent::new();
+
+        let watermark = Box::new(ByteOffsetWatermark::new(0));
+        let result = agent
+            .read_incremental(file.path(), watermark, "test")
+            .unwrap();
+        assert_eq!(result.events.len(), 2);
+
+        let result2 = agent
+            .read_incremental(file.path(), result.new_watermark, "test")
+            .unwrap();
+        assert_eq!(result2.events.len(), 0);
     }
 }

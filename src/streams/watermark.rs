@@ -1,6 +1,6 @@
 //! Watermarking strategies for tracking transcript processing progress.
 
-use super::types::TranscriptError;
+use super::types::StreamError;
 use chrono::{DateTime, Utc};
 use std::fmt;
 use std::str::FromStr;
@@ -40,7 +40,7 @@ impl fmt::Display for WatermarkType {
 }
 
 impl FromStr for WatermarkType {
-    type Err = TranscriptError;
+    type Err = StreamError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
@@ -49,7 +49,7 @@ impl FromStr for WatermarkType {
             "Timestamp" => Ok(WatermarkType::Timestamp),
             "Hybrid" => Ok(WatermarkType::Hybrid),
             "TimestampCursor" => Ok(WatermarkType::TimestampCursor),
-            _ => Err(TranscriptError::Parse {
+            _ => Err(StreamError::Parse {
                 line: 0,
                 message: format!("Invalid watermark type: {}", s),
             }),
@@ -59,7 +59,7 @@ impl FromStr for WatermarkType {
 
 impl WatermarkType {
     /// Deserialize a watermark value based on the strategy type.
-    pub fn deserialize(&self, s: &str) -> Result<Box<dyn WatermarkStrategy>, TranscriptError> {
+    pub fn deserialize(&self, s: &str) -> Result<Box<dyn WatermarkStrategy>, StreamError> {
         match self {
             WatermarkType::ByteOffset => Ok(Box::new(ByteOffsetWatermark::from_str(s)?)),
             WatermarkType::RecordIndex => Ok(Box::new(RecordIndexWatermark::from_str(s)?)),
@@ -107,12 +107,12 @@ impl WatermarkStrategy for ByteOffsetWatermark {
 }
 
 impl FromStr for ByteOffsetWatermark {
-    type Err = TranscriptError;
+    type Err = StreamError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         s.parse::<u64>()
             .map(ByteOffsetWatermark)
-            .map_err(|e| TranscriptError::Parse {
+            .map_err(|e| StreamError::Parse {
                 line: 0,
                 message: format!("Invalid byte offset watermark: {}", e),
             })
@@ -144,12 +144,12 @@ impl WatermarkStrategy for RecordIndexWatermark {
 }
 
 impl FromStr for RecordIndexWatermark {
-    type Err = TranscriptError;
+    type Err = StreamError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         s.parse::<u64>()
             .map(RecordIndexWatermark)
-            .map_err(|e| TranscriptError::Parse {
+            .map_err(|e| StreamError::Parse {
                 line: 0,
                 message: format!("Invalid record index watermark: {}", e),
             })
@@ -182,12 +182,12 @@ impl WatermarkStrategy for TimestampWatermark {
 }
 
 impl FromStr for TimestampWatermark {
-    type Err = TranscriptError;
+    type Err = StreamError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         DateTime::parse_from_rfc3339(s)
             .map(|dt| TimestampWatermark(dt.with_timezone(&Utc)))
-            .map_err(|e| TranscriptError::Parse {
+            .map_err(|e| StreamError::Parse {
                 line: 0,
                 message: format!("Invalid timestamp watermark: {}", e),
             })
@@ -235,17 +235,17 @@ impl WatermarkStrategy for TimestampCursorWatermark {
 }
 
 impl FromStr for TimestampCursorWatermark {
-    type Err = TranscriptError;
+    type Err = StreamError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let (ts_str, id) = s.split_once('|').ok_or_else(|| TranscriptError::Parse {
+        let (ts_str, id) = s.split_once('|').ok_or_else(|| StreamError::Parse {
             line: 0,
             message: format!(
                 "Invalid TimestampCursor watermark format: expected 'millis|id', got '{}'",
                 s
             ),
         })?;
-        let timestamp_millis = ts_str.parse::<i64>().map_err(|e| TranscriptError::Parse {
+        let timestamp_millis = ts_str.parse::<i64>().map_err(|e| StreamError::Parse {
             line: 0,
             message: format!("Invalid timestamp in TimestampCursor watermark: {}", e),
         })?;
@@ -294,12 +294,12 @@ impl WatermarkStrategy for HybridWatermark {
 }
 
 impl FromStr for HybridWatermark {
-    type Err = TranscriptError;
+    type Err = StreamError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let parts: Vec<&str> = s.split('|').collect();
         if parts.len() != 3 {
-            return Err(TranscriptError::Parse {
+            return Err(StreamError::Parse {
                 line: 0,
                 message: format!(
                     "Invalid hybrid watermark format: expected 3 parts, got {}",
@@ -308,19 +308,15 @@ impl FromStr for HybridWatermark {
             });
         }
 
-        let offset = parts[0]
-            .parse::<u64>()
-            .map_err(|e| TranscriptError::Parse {
-                line: 0,
-                message: format!("Invalid offset in hybrid watermark: {}", e),
-            })?;
+        let offset = parts[0].parse::<u64>().map_err(|e| StreamError::Parse {
+            line: 0,
+            message: format!("Invalid offset in hybrid watermark: {}", e),
+        })?;
 
-        let record = parts[1]
-            .parse::<u64>()
-            .map_err(|e| TranscriptError::Parse {
-                line: 0,
-                message: format!("Invalid record in hybrid watermark: {}", e),
-            })?;
+        let record = parts[1].parse::<u64>().map_err(|e| StreamError::Parse {
+            line: 0,
+            message: format!("Invalid record in hybrid watermark: {}", e),
+        })?;
 
         let timestamp = if parts[2].is_empty() {
             None
@@ -328,7 +324,7 @@ impl FromStr for HybridWatermark {
             Some(
                 DateTime::parse_from_rfc3339(parts[2])
                     .map(|dt| dt.with_timezone(&Utc))
-                    .map_err(|e| TranscriptError::Parse {
+                    .map_err(|e| StreamError::Parse {
                         line: 0,
                         message: format!("Invalid timestamp in hybrid watermark: {}", e),
                     })?,
@@ -596,7 +592,7 @@ mod tests {
         let result = WatermarkType::from_str("Invalid");
         assert!(result.is_err());
         match result {
-            Err(TranscriptError::Parse { message, .. }) => {
+            Err(StreamError::Parse { message, .. }) => {
                 assert!(message.contains("Invalid watermark type"));
             }
             _ => panic!("Expected Parse error"),

@@ -1,6 +1,6 @@
 //! Transcripts database for tracking stream cursors and watermarks.
 
-use super::types::TranscriptError;
+use super::types::StreamError;
 use super::watermark::WatermarkStrategy;
 use chrono::{DateTime, Utc};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -148,28 +148,28 @@ pub struct StreamsDatabase {
 
 impl StreamsDatabase {
     /// Open or create the transcripts database at the given path.
-    pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, TranscriptError> {
-        let conn = Connection::open(path.as_ref()).map_err(|e| TranscriptError::Fatal {
+    pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, StreamError> {
+        let conn = Connection::open(path.as_ref()).map_err(|e| StreamError::Fatal {
             message: format!("Failed to open database: {}", e),
         })?;
 
         // Enable WAL mode for better concurrency and crash resistance
         conn.pragma_update(None, "journal_mode", "WAL")
-            .map_err(|e| TranscriptError::Fatal {
+            .map_err(|e| StreamError::Fatal {
                 message: format!("Failed to enable WAL mode: {}", e),
             })?;
 
         // Performance optimizations
         conn.pragma_update(None, "synchronous", "NORMAL")
-            .map_err(|e| TranscriptError::Fatal {
+            .map_err(|e| StreamError::Fatal {
                 message: format!("Failed to set synchronous mode: {}", e),
             })?;
         conn.pragma_update(None, "cache_size", -2000)
-            .map_err(|e| TranscriptError::Fatal {
+            .map_err(|e| StreamError::Fatal {
                 message: format!("Failed to set cache size: {}", e),
             })?;
         conn.pragma_update(None, "temp_store", "MEMORY")
-            .map_err(|e| TranscriptError::Fatal {
+            .map_err(|e| StreamError::Fatal {
                 message: format!("Failed to set temp store: {}", e),
             })?;
 
@@ -184,7 +184,7 @@ impl StreamsDatabase {
     }
 
     /// Run database migrations to bring schema up to current version.
-    fn migrate(&self) -> Result<(), TranscriptError> {
+    fn migrate(&self) -> Result<(), StreamError> {
         let conn = self
             .conn
             .lock()
@@ -200,7 +200,7 @@ impl StreamsDatabase {
                     Ok(count > 0)
                 },
             )
-            .map_err(|e| TranscriptError::Fatal {
+            .map_err(|e| StreamError::Fatal {
                 message: format!("Failed to check schema_version table: {}", e),
             })?;
 
@@ -212,7 +212,7 @@ impl StreamsDatabase {
                 |row| row.get(0),
             )
             .optional()
-            .map_err(|e| TranscriptError::Fatal {
+            .map_err(|e| StreamError::Fatal {
                 message: format!("Failed to query schema version: {}", e),
             })?
             .unwrap_or(0)
@@ -225,7 +225,7 @@ impl StreamsDatabase {
             let target_version = (version + 1) as u32;
             if current_version < target_version {
                 conn.execute_batch(migration_sql)
-                    .map_err(|e| TranscriptError::Fatal {
+                    .map_err(|e| StreamError::Fatal {
                         message: format!(
                             "Failed to apply migration to version {}: {}",
                             target_version, e
@@ -238,7 +238,7 @@ impl StreamsDatabase {
     }
 
     /// Insert a new stream record.
-    pub fn insert_stream(&self, record: &StreamRecord) -> Result<(), TranscriptError> {
+    pub fn insert_stream(&self, record: &StreamRecord) -> Result<(), StreamError> {
         let conn = self
             .conn
             .lock()
@@ -273,7 +273,7 @@ impl StreamsDatabase {
                 record.repo_work_dir,
             ],
         )
-        .map_err(|e| TranscriptError::Fatal {
+        .map_err(|e| StreamError::Fatal {
             message: format!("Failed to insert stream: {}", e),
         })?;
 
@@ -308,7 +308,7 @@ impl StreamsDatabase {
         session_id: &str,
         stream_kind: &str,
         stream_path: &str,
-    ) -> Result<Option<StreamRecord>, TranscriptError> {
+    ) -> Result<Option<StreamRecord>, StreamError> {
         let conn = self
             .conn
             .lock()
@@ -326,7 +326,7 @@ impl StreamsDatabase {
             Self::row_to_stream,
         )
         .optional()
-        .map_err(|e| TranscriptError::Fatal {
+        .map_err(|e| StreamError::Fatal {
             message: format!("Failed to get stream: {}", e),
         })
     }
@@ -338,7 +338,7 @@ impl StreamsDatabase {
         stream_kind: &str,
         stream_path: &str,
         watermark: &dyn WatermarkStrategy,
-    ) -> Result<(), TranscriptError> {
+    ) -> Result<(), StreamError> {
         let conn = self
             .conn
             .lock()
@@ -350,12 +350,12 @@ impl StreamsDatabase {
             "UPDATE tracked_streams SET watermark_value = ?1, last_processed_at = ?2 WHERE session_id = ?3 AND stream_kind = ?4 AND stream_path = ?5",
             params![watermark_value, now, session_id, stream_kind, stream_path],
         )
-        .map_err(|e| TranscriptError::Fatal {
+        .map_err(|e| StreamError::Fatal {
             message: format!("Failed to update watermark: {}", e),
         })?;
 
         if rows_changed == 0 {
-            return Err(TranscriptError::Fatal {
+            return Err(StreamError::Fatal {
                 message: format!("Stream not found: {}", session_id),
             });
         }
@@ -371,7 +371,7 @@ impl StreamsDatabase {
         stream_path: &str,
         file_size: u64,
         modified: Option<DateTime<Utc>>,
-    ) -> Result<(), TranscriptError> {
+    ) -> Result<(), StreamError> {
         let conn = self
             .conn
             .lock()
@@ -382,12 +382,12 @@ impl StreamsDatabase {
             "UPDATE tracked_streams SET last_known_size = ?1, last_modified = ?2 WHERE session_id = ?3 AND stream_kind = ?4 AND stream_path = ?5",
             params![file_size as i64, modified_ts, session_id, stream_kind, stream_path],
         )
-        .map_err(|e| TranscriptError::Fatal {
+        .map_err(|e| StreamError::Fatal {
             message: format!("Failed to update file metadata: {}", e),
         })?;
 
         if rows_changed == 0 {
-            return Err(TranscriptError::Fatal {
+            return Err(StreamError::Fatal {
                 message: format!("Stream not found: {}", session_id),
             });
         }
@@ -402,7 +402,7 @@ impl StreamsDatabase {
         stream_kind: &str,
         stream_path: &str,
         repo_work_dir: &str,
-    ) -> Result<(), TranscriptError> {
+    ) -> Result<(), StreamError> {
         let conn = self
             .conn
             .lock()
@@ -413,12 +413,12 @@ impl StreamsDatabase {
                 "UPDATE tracked_streams SET repo_work_dir = ?1 WHERE session_id = ?2 AND stream_kind = ?3 AND stream_path = ?4",
                 params![repo_work_dir, session_id, stream_kind, stream_path],
             )
-            .map_err(|e| TranscriptError::Fatal {
+            .map_err(|e| StreamError::Fatal {
                 message: format!("Failed to update repo_work_dir: {}", e),
             })?;
 
         if rows_changed == 0 {
-            return Err(TranscriptError::Fatal {
+            return Err(StreamError::Fatal {
                 message: format!("Stream not found: {}", session_id),
             });
         }
@@ -433,7 +433,7 @@ impl StreamsDatabase {
         stream_kind: &str,
         stream_path: &str,
         error_message: &str,
-    ) -> Result<(), TranscriptError> {
+    ) -> Result<(), StreamError> {
         let conn = self
             .conn
             .lock()
@@ -443,12 +443,12 @@ impl StreamsDatabase {
             "UPDATE tracked_streams SET processing_errors = processing_errors + 1, last_error = ?1 WHERE session_id = ?2 AND stream_kind = ?3 AND stream_path = ?4",
             params![error_message, session_id, stream_kind, stream_path],
         )
-        .map_err(|e| TranscriptError::Fatal {
+        .map_err(|e| StreamError::Fatal {
             message: format!("Failed to record error: {}", e),
         })?;
 
         if rows_changed == 0 {
-            return Err(TranscriptError::Fatal {
+            return Err(StreamError::Fatal {
                 message: format!("Stream not found: {}", session_id),
             });
         }
@@ -462,7 +462,7 @@ impl StreamsDatabase {
         session_id: &str,
         stream_kind: &str,
         stream_path: &str,
-    ) -> Result<(), TranscriptError> {
+    ) -> Result<(), StreamError> {
         let conn = self
             .conn
             .lock()
@@ -473,12 +473,12 @@ impl StreamsDatabase {
                 "DELETE FROM tracked_streams WHERE session_id = ?1 AND stream_kind = ?2 AND stream_path = ?3",
                 params![session_id, stream_kind, stream_path],
             )
-            .map_err(|e| TranscriptError::Fatal {
+            .map_err(|e| StreamError::Fatal {
                 message: format!("Failed to delete stream: {}", e),
             })?;
 
         if rows_changed == 0 {
-            return Err(TranscriptError::Fatal {
+            return Err(StreamError::Fatal {
                 message: format!("Stream not found: {}", session_id),
             });
         }
@@ -487,7 +487,7 @@ impl StreamsDatabase {
     }
 
     /// Get all stream records.
-    pub fn all_streams(&self) -> Result<Vec<StreamRecord>, TranscriptError> {
+    pub fn all_streams(&self) -> Result<Vec<StreamRecord>, StreamError> {
         let conn = self
             .conn
             .lock()
@@ -503,19 +503,19 @@ impl StreamsDatabase {
             FROM tracked_streams
             "#,
             )
-            .map_err(|e| TranscriptError::Fatal {
+            .map_err(|e| StreamError::Fatal {
                 message: format!("Failed to prepare all_streams query: {}", e),
             })?;
 
         let rows = stmt
             .query_map([], Self::row_to_stream)
-            .map_err(|e| TranscriptError::Fatal {
+            .map_err(|e| StreamError::Fatal {
                 message: format!("Failed to query all streams: {}", e),
             })?;
 
         let mut streams = Vec::new();
         for row in rows {
-            streams.push(row.map_err(|e| TranscriptError::Fatal {
+            streams.push(row.map_err(|e| StreamError::Fatal {
                 message: format!("Failed to read stream row: {}", e),
             })?);
         }
@@ -815,7 +815,7 @@ mod tests {
         let result = db.update_watermark("nonexistent", "transcript", "/no/such/path", &watermark);
         assert!(result.is_err());
         match result {
-            Err(TranscriptError::Fatal { message }) => {
+            Err(StreamError::Fatal { message }) => {
                 assert!(message.contains("Stream not found"));
             }
             _ => panic!("Expected Fatal error"),
@@ -836,7 +836,7 @@ mod tests {
         );
         assert!(result.is_err());
         match result {
-            Err(TranscriptError::Fatal { message }) => {
+            Err(StreamError::Fatal { message }) => {
                 assert!(message.contains("Stream not found"));
             }
             _ => panic!("Expected Fatal error"),
@@ -889,7 +889,7 @@ mod tests {
         let result = db.record_error("nonexistent", "transcript", "/no/such/path", "error");
         assert!(result.is_err());
         match result {
-            Err(TranscriptError::Fatal { message }) => {
+            Err(StreamError::Fatal { message }) => {
                 assert!(message.contains("Stream not found"));
             }
             _ => panic!("Expected Fatal error"),
@@ -928,7 +928,7 @@ mod tests {
         let result = db.delete_stream("nonexistent", "transcript", "/no/such/path");
         assert!(result.is_err());
         match result {
-            Err(TranscriptError::Fatal { message }) => {
+            Err(StreamError::Fatal { message }) => {
                 assert!(message.contains("Stream not found"));
             }
             _ => panic!("Expected Fatal error"),

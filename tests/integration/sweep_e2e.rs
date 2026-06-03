@@ -7,11 +7,11 @@
 //! 4. Never miss a message (complete coverage)
 //! 5. Sweep never double processes files (in_flight deduplication)
 
-use git_ai::transcripts::agent::Agent;
-use git_ai::transcripts::agents::ClaudeAgent;
-use git_ai::transcripts::db::StreamsDatabase;
-use git_ai::transcripts::sweep::SweepStrategy;
-use git_ai::transcripts::watermark::ByteOffsetWatermark;
+use git_ai::streams::agent::Agent;
+use git_ai::streams::agents::ClaudeAgent;
+use git_ai::streams::db::StreamsDatabase;
+use git_ai::streams::sweep::SweepStrategy;
+use git_ai::streams::watermark::ByteOffsetWatermark;
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
@@ -272,7 +272,7 @@ fn test_sweep_deduplication_via_session_id() {
 
     // Insert session (simulating SweepCoordinator.insert_new_session)
     let now = chrono::Utc::now().timestamp();
-    let record = git_ai::transcripts::db::StreamRecord {
+    let record = git_ai::streams::db::StreamRecord {
         session_id: session_id.to_string(),
         stream_kind: "transcript".to_string(),
         tool: "claude".to_string(),
@@ -321,7 +321,7 @@ fn test_behind_detection_on_file_growth() {
 
     // Insert session with current file size
     let now = chrono::Utc::now().timestamp();
-    let record = git_ai::transcripts::db::StreamRecord {
+    let record = git_ai::streams::db::StreamRecord {
         session_id: "test_session".to_string(),
         stream_kind: "transcript".to_string(),
         tool: "claude".to_string(),
@@ -408,7 +408,7 @@ fn test_watermark_persistence_after_processing() {
 
     // Insert session
     let now = chrono::Utc::now().timestamp();
-    let record = git_ai::transcripts::db::StreamRecord {
+    let record = git_ai::streams::db::StreamRecord {
         session_id: "test_session".to_string(),
         stream_kind: "transcript".to_string(),
         tool: "claude".to_string(),

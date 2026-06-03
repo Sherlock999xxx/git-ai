@@ -1,6 +1,6 @@
 use super::{
     AgentPreset, ParsedHookEvent, PostBashCall, PostFileEdit, PreBashCall, PreFileEdit,
-    PresetContext, TranscriptFormat, TranscriptSource,
+    PresetContext, StreamFormat, TranscriptSource,
 };
 use crate::authorship::authorship_log_serialization::generate_session_id;
 use crate::authorship::working_log::AgentId;
@@ -158,7 +158,7 @@ impl OpenCodePreset {
             return Some((
                 TranscriptSource {
                     path: db_path,
-                    format: TranscriptFormat::OpenCodeSqlite,
+                    format: StreamFormat::OpenCodeSqlite,
                     session_id: generate_session_id(session_id, "opencode"),
                     external_session_id: session_id.to_string(),
                     external_parent_session_id: parent_id,
@@ -171,7 +171,7 @@ impl OpenCodePreset {
     }
 
     fn lookup_parent_session(db_path: &Path, session_id: &str) -> Option<String> {
-        let conn = crate::transcripts::agents::opencode::open_sqlite_readonly(db_path).ok()?;
+        let conn = crate::streams::agents::opencode::open_sqlite_readonly(db_path).ok()?;
         conn.query_row(
             "SELECT parent_id FROM session WHERE id = ?",
             [session_id],
@@ -292,9 +292,9 @@ impl AgentPreset for OpenCodePreset {
         let transcript_result = Self::resolve_transcript_source(&session_id);
 
         let extracted_model = transcript_result.as_ref().and_then(|(ts, _)| {
-            crate::transcripts::model_extraction::extract_model(
+            crate::streams::model_extraction::extract_model(
                 &ts.path,
-                crate::transcripts::sweep::TranscriptFormat::OpenCodeSqlite,
+                crate::streams::sweep::StreamFormat::OpenCodeSqlite,
                 Some(session_id.as_str()),
             )
             .ok()

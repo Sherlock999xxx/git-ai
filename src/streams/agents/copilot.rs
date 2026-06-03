@@ -1,10 +1,10 @@
 //! GitHub Copilot agent implementation with sweep discovery.
 
 use crate::authorship::authorship_log_serialization::generate_session_id;
-use crate::transcripts::agent::{Agent, PathResolverKind, StreamDescriptor};
-use crate::transcripts::sweep::{DiscoveredSession, SweepStrategy, TranscriptFormat};
-use crate::transcripts::types::{TranscriptBatch, TranscriptError};
-use crate::transcripts::watermark::{
+use crate::streams::agent::{Agent, PathResolverKind, StreamDescriptor};
+use crate::streams::sweep::{DiscoveredSession, StreamFormat, SweepStrategy};
+use crate::streams::types::{StreamBatch, StreamError};
+use crate::streams::watermark::{
     ByteOffsetWatermark, RecordIndexWatermark, WatermarkStrategy, WatermarkType,
 };
 use std::fs;
@@ -146,11 +146,11 @@ impl CopilotAgent {
 
     /// Determine transcript format from file path.
     #[cfg(test)]
-    fn determine_format(path: &Path) -> TranscriptFormat {
+    fn determine_format(path: &Path) -> StreamFormat {
         if path.extension().and_then(|s| s.to_str()) == Some("jsonl") {
-            TranscriptFormat::CopilotEventStreamJsonl
+            StreamFormat::CopilotEventStreamJsonl
         } else {
-            TranscriptFormat::CopilotSessionJson
+            StreamFormat::CopilotSessionJson
         }
     }
 
@@ -225,7 +225,7 @@ impl Agent for CopilotAgent {
         SweepStrategy::Periodic(Duration::from_secs(30 * 60))
     }
 
-    fn discover_sessions(&self) -> Result<Vec<DiscoveredSession>, TranscriptError> {
+    fn discover_sessions(&self) -> Result<Vec<DiscoveredSession>, StreamError> {
         let paths = Self::scan_transcript_files();
         let mut sessions = Vec::new();
 
@@ -258,7 +258,7 @@ impl Agent for CopilotAgent {
         vec![
             StreamDescriptor {
                 stream_kind: "transcript",
-                format: TranscriptFormat::CopilotEventStreamJsonl,
+                format: StreamFormat::CopilotEventStreamJsonl,
                 watermark_type: WatermarkType::ByteOffset,
                 path_resolver: PathResolverKind::Identity,
                 shared: false,
@@ -271,15 +271,15 @@ impl Agent for CopilotAgent {
                 })),
                 format_resolver: Some(Box::new(|path| {
                     if path.extension().and_then(|e| e.to_str()) == Some("json") {
-                        TranscriptFormat::CopilotSessionJson
+                        StreamFormat::CopilotSessionJson
                     } else {
-                        TranscriptFormat::CopilotEventStreamJsonl
+                        StreamFormat::CopilotEventStreamJsonl
                     }
                 })),
             },
             StreamDescriptor {
                 stream_kind: "otel_traces",
-                format: TranscriptFormat::CopilotOtelSqlite,
+                format: StreamFormat::CopilotOtelSqlite,
                 watermark_type: WatermarkType::TimestampCursor,
                 path_resolver: PathResolverKind::Custom(Box::new(Self::resolve_otel_db_path)),
                 shared: true,
@@ -294,7 +294,7 @@ impl Agent for CopilotAgent {
         path: &Path,
         watermark: Box<dyn WatermarkStrategy>,
         session_id: &str,
-    ) -> Result<TranscriptBatch, TranscriptError> {
+    ) -> Result<StreamBatch, StreamError> {
         // OTEL SQLite DB files
         if path.extension().and_then(|e| e.to_str()) == Some("db") {
             return super::copilot_otel::read_otel_spans_incremental(
@@ -354,9 +354,8 @@ impl Agent for CopilotAgent {
         {
             return ts;
         }
-        crate::daemon::transcript_worker::extract_event_timestamp(event).unwrap_or_else(|| {
-            crate::transcripts::agent::file_time_fallback(file_meta, is_first_event)
-        })
+        crate::daemon::transcript_worker::extract_event_timestamp(event)
+            .unwrap_or_else(|| crate::streams::agent::file_time_fallback(file_meta, is_first_event))
     }
 
     fn infer_cwd(&self, transcript_path: &Path) -> Option<PathBuf> {
@@ -399,11 +398,11 @@ fn read_session_json(
     watermark: Box<dyn WatermarkStrategy>,
     session_id: &str,
     batch_limit: usize,
-) -> Result<TranscriptBatch, TranscriptError> {
+) -> Result<StreamBatch, StreamError> {
     let record_watermark = watermark
         .as_any()
         .downcast_ref::<RecordIndexWatermark>()
-        .ok_or_else(|| TranscriptError::Fatal {
+        .ok_or_else(|| StreamError::Fatal {
             message: format!(
                 "Copilot session reader requires RecordIndexWatermark, got incompatible type for session {}",
                 session_id
@@ -417,7 +416,7 @@ fn read_session_json(
     let is_remote_containers = std::env::var("REMOTE_CONTAINERS").ok().as_deref() == Some("true");
 
     if is_codespaces || is_remote_containers {
-        return Ok(TranscriptBatch {
+        return Ok(StreamBatch {
             events: Vec::new(),
             new_watermark: watermark,
         });
@@ -425,15 +424,15 @@ fn read_session_json(
 
     let file = std::fs::File::open(path).map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
-            TranscriptError::Fatal {
+            StreamError::Fatal {
                 message: format!("Transcript file not found: {}", path.display()),
             }
         } else if e.kind() == std::io::ErrorKind::PermissionDenied {
-            TranscriptError::Fatal {
+            StreamError::Fatal {
                 message: format!("Permission denied reading transcript: {}", path.display()),
             }
         } else {
-            TranscriptError::Transient {
+            StreamError::Transient {
                 message: format!("Failed to read transcript file: {}", e),
                 retry_after: std::time::Duration::from_secs(5),
             }
@@ -442,7 +441,7 @@ fn read_session_json(
 
     let reader = std::io::BufReader::new(file);
     let mut session_json: serde_json::Value =
-        serde_json::from_reader(reader).map_err(|e| TranscriptError::Parse {
+        serde_json::from_reader(reader).map_err(|e| StreamError::Parse {
             line: 0,
             message: format!("Invalid JSON in {}: {}", path.display(), e),
         })?;
@@ -453,7 +452,7 @@ fn read_session_json(
     {
         Some(serde_json::Value::Array(arr)) => arr,
         _ => {
-            return Err(TranscriptError::Parse {
+            return Err(StreamError::Parse {
                 line: 0,
                 message: "requests array not found in Copilot session JSON".to_string(),
             });
@@ -470,7 +469,7 @@ fn read_session_json(
         (skip_count + events.len()) as u64,
     ));
 
-    Ok(TranscriptBatch {
+    Ok(StreamBatch {
         events,
         new_watermark,
     })
@@ -482,7 +481,7 @@ pub(super) fn read_event_stream(
     watermark: Box<dyn WatermarkStrategy>,
     session_id: &str,
     batch_limit: usize,
-) -> Result<TranscriptBatch, TranscriptError> {
+) -> Result<StreamBatch, StreamError> {
     use std::fs::File;
     use std::io::{BufReader, Seek, SeekFrom};
 
@@ -490,7 +489,7 @@ pub(super) fn read_event_stream(
     let byte_watermark = watermark
         .as_any()
         .downcast_ref::<ByteOffsetWatermark>()
-        .ok_or_else(|| TranscriptError::Fatal {
+        .ok_or_else(|| StreamError::Fatal {
             message: format!(
                 "Copilot event stream reader requires ByteOffsetWatermark, got incompatible type for session {}",
                 session_id
@@ -502,15 +501,15 @@ pub(super) fn read_event_stream(
     // Open file
     let file = File::open(path).map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
-            TranscriptError::Fatal {
+            StreamError::Fatal {
                 message: format!("Transcript file not found: {}", path.display()),
             }
         } else if e.kind() == std::io::ErrorKind::PermissionDenied {
-            TranscriptError::Fatal {
+            StreamError::Fatal {
                 message: format!("Permission denied reading transcript: {}", path.display()),
             }
         } else {
-            TranscriptError::Transient {
+            StreamError::Transient {
                 message: format!("Failed to open transcript file: {}", e),
                 retry_after: std::time::Duration::from_secs(5),
             }
@@ -522,7 +521,7 @@ pub(super) fn read_event_stream(
     // Seek to watermark position
     reader
         .seek(SeekFrom::Start(start_offset))
-        .map_err(|e| TranscriptError::Transient {
+        .map_err(|e| StreamError::Transient {
             message: format!("Failed to seek to offset {}: {}", start_offset, e),
             retry_after: std::time::Duration::from_secs(5),
         })?;
@@ -534,15 +533,15 @@ pub(super) fn read_event_stream(
     // Read lines from watermark position
     let mut line = String::new();
     loop {
-        match crate::transcripts::types::read_jsonl_line(&mut reader, &mut line).map_err(|e| {
-            TranscriptError::Transient {
+        match crate::streams::types::read_jsonl_line(&mut reader, &mut line).map_err(|e| {
+            StreamError::Transient {
                 message: format!("I/O error reading line: {}", e),
                 retry_after: std::time::Duration::from_secs(5),
             }
         })? {
-            crate::transcripts::types::JsonlLineState::Eof => break,
-            crate::transcripts::types::JsonlLineState::Partial => break,
-            crate::transcripts::types::JsonlLineState::Complete(bytes_read) => {
+            crate::streams::types::JsonlLineState::Eof => break,
+            crate::streams::types::JsonlLineState::Partial => break,
+            crate::streams::types::JsonlLineState::Complete(bytes_read) => {
                 line_number += 1;
                 current_offset += bytes_read as u64;
             }
@@ -574,7 +573,7 @@ pub(super) fn read_event_stream(
     // Create new watermark with updated offset
     let new_watermark = Box::new(ByteOffsetWatermark::new(current_offset));
 
-    Ok(TranscriptBatch {
+    Ok(StreamBatch {
         events,
         new_watermark,
     })
@@ -598,13 +597,13 @@ mod tests {
         let json_path = PathBuf::from("/path/to/session.json");
         assert_eq!(
             CopilotAgent::determine_format(&json_path),
-            TranscriptFormat::CopilotSessionJson
+            StreamFormat::CopilotSessionJson
         );
 
         let jsonl_path = PathBuf::from("/path/to/events.jsonl");
         assert_eq!(
             CopilotAgent::determine_format(&jsonl_path),
-            TranscriptFormat::CopilotEventStreamJsonl
+            StreamFormat::CopilotEventStreamJsonl
         );
     }
 

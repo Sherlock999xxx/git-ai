@@ -1,4 +1,4 @@
-// src/transcripts/sweep.rs
+// src/streams/sweep.rs
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -28,7 +28,7 @@ pub struct DiscoveredSession {
 
 /// Transcript file format enum
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TranscriptFormat {
+pub enum StreamFormat {
     ClaudeJsonl,
     CursorJsonl,
     DroidJsonl,
@@ -44,7 +44,7 @@ pub enum TranscriptFormat {
     CopilotOtelSqlite,
 }
 
-impl std::fmt::Display for TranscriptFormat {
+impl std::fmt::Display for StreamFormat {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::ClaudeJsonl => write!(f, "ClaudeJsonl"),
@@ -64,7 +64,7 @@ impl std::fmt::Display for TranscriptFormat {
     }
 }
 
-impl TranscriptFormat {
+impl StreamFormat {
     pub fn watermark_type(self) -> super::watermark::WatermarkType {
         use super::watermark::WatermarkType;
         match self {

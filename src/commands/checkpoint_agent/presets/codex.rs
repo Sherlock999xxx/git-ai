@@ -2,7 +2,7 @@ use super::opencode::OpenCodePreset;
 use super::parse;
 use super::{
     AgentPreset, ParsedHookEvent, PostBashCall, PostFileEdit, PreBashCall, PreFileEdit,
-    PresetContext, TranscriptFormat, TranscriptSource,
+    PresetContext, StreamFormat, TranscriptSource,
 };
 use crate::authorship::authorship_log_serialization::generate_session_id;
 use crate::authorship::working_log::AgentId;
@@ -37,7 +37,7 @@ impl CodexPreset {
         }
 
         let codex_home = dirs::home_dir()?.join(".codex");
-        crate::transcripts::agents::CodexAgent::find_rollout_path_for_session_in_home(
+        crate::streams::agents::CodexAgent::find_rollout_path_for_session_in_home(
             session_id,
             &codex_home,
         )
@@ -132,7 +132,7 @@ impl AgentPreset for CodexPreset {
 
         let transcript_source = transcript_path.map(|tp| TranscriptSource {
             path: PathBuf::from(tp),
-            format: TranscriptFormat::CodexJsonl,
+            format: StreamFormat::CodexJsonl,
             session_id: generate_session_id(&context.external_session_id, "codex"),
             external_session_id: context.external_session_id.clone(),
             external_parent_session_id: None,
@@ -251,7 +251,7 @@ mod tests {
                 assert!(matches!(
                     e.transcript_source,
                     Some(TranscriptSource {
-                        format: TranscriptFormat::CodexJsonl,
+                        format: StreamFormat::CodexJsonl,
                         ..
                     })
                 ));

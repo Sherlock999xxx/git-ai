@@ -1,7 +1,7 @@
 use super::parse;
 use super::{
     AgentPreset, ParsedHookEvent, PostBashCall, PostFileEdit, PreBashCall, PreFileEdit,
-    PresetContext, TranscriptFormat, TranscriptSource,
+    PresetContext, StreamFormat, TranscriptSource,
 };
 use crate::authorship::authorship_log_serialization::generate_session_id;
 use crate::authorship::working_log::AgentId;
@@ -113,7 +113,7 @@ impl AgentPreset for CursorPreset {
 
         let transcript_source = transcript_path.map(|tp| TranscriptSource {
             path: PathBuf::from(tp),
-            format: TranscriptFormat::CursorJsonl,
+            format: StreamFormat::CursorJsonl,
             session_id: generate_session_id(&conversation_id, "cursor"),
             external_session_id: conversation_id.clone(),
             external_parent_session_id: None,
@@ -267,7 +267,7 @@ mod tests {
                 );
                 assert!(e.transcript_source.is_some());
                 if let Some(ts) = &e.transcript_source {
-                    assert_eq!(ts.format, TranscriptFormat::CursorJsonl);
+                    assert_eq!(ts.format, StreamFormat::CursorJsonl);
                     assert_eq!(ts.session_id, generate_session_id("conv-123", "cursor"));
                     assert_eq!(ts.external_session_id, "conv-123");
                 }

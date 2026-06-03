@@ -1,8 +1,8 @@
 use crate::test_utils::fixture_path;
 use git_ai::commands::checkpoint_agent::presets::{ParsedHookEvent, resolve_preset};
-use git_ai::transcripts::agent::Agent;
-use git_ai::transcripts::agents::AmpAgent;
-use git_ai::transcripts::watermark::RecordIndexWatermark;
+use git_ai::streams::agent::Agent;
+use git_ai::streams::agents::AmpAgent;
+use git_ai::streams::watermark::RecordIndexWatermark;
 use serde_json::json;
 use std::fs;
 use std::path::{Path, PathBuf};

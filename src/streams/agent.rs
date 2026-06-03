@@ -1,7 +1,7 @@
-// src/transcripts/agent.rs
+// src/streams/agent.rs
 
-use super::sweep::{DiscoveredSession, SweepStrategy, TranscriptFormat};
-use super::types::{TranscriptBatch, TranscriptError};
+use super::sweep::{DiscoveredSession, StreamFormat, SweepStrategy};
+use super::types::{StreamBatch, StreamError};
 use super::watermark::WatermarkStrategy;
 use std::path::{Path, PathBuf};
 
@@ -26,11 +26,11 @@ pub enum PathResolverKind {
 /// Type alias for resolver functions that derive values from the resolved path.
 pub type WatermarkTypeResolverFn =
     Box<dyn Fn(&Path) -> super::watermark::WatermarkType + Send + Sync>;
-pub type FormatResolverFn = Box<dyn Fn(&Path) -> TranscriptFormat + Send + Sync>;
+pub type FormatResolverFn = Box<dyn Fn(&Path) -> StreamFormat + Send + Sync>;
 
 pub struct StreamDescriptor {
     pub stream_kind: &'static str,
-    pub format: TranscriptFormat,
+    pub format: StreamFormat,
     pub watermark_type: super::watermark::WatermarkType,
     pub path_resolver: PathResolverKind,
     /// When true, this stream's data source is shared across multiple sessions
@@ -68,7 +68,7 @@ impl StreamDescriptor {
         }
     }
 
-    pub fn effective_format(&self, resolved_path: &Path) -> TranscriptFormat {
+    pub fn effective_format(&self, resolved_path: &Path) -> StreamFormat {
         if let Some(resolver) = &self.format_resolver {
             resolver(resolved_path)
         } else {
@@ -89,7 +89,7 @@ pub trait Agent: Send + Sync {
     ///
     /// Returns ALL sessions found, regardless of whether they're in transcripts-db.
     /// The coordinator will compare against the DB to decide what to process.
-    fn discover_sessions(&self) -> Result<Vec<DiscoveredSession>, TranscriptError>;
+    fn discover_sessions(&self) -> Result<Vec<DiscoveredSession>, StreamError>;
 
     /// Maximum number of events to return per `read_incremental` call.
     /// Bounds peak memory to batch_size × avg_event_size instead of file_size.
@@ -110,7 +110,7 @@ pub trait Agent: Send + Sync {
         path: &Path,
         watermark: Box<dyn WatermarkStrategy>,
         session_id: &str,
-    ) -> Result<TranscriptBatch, TranscriptError>;
+    ) -> Result<StreamBatch, StreamError>;
 
     /// Extract per-event external IDs from a raw transcript event.
     ///

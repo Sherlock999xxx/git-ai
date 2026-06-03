@@ -1,23 +1,23 @@
-use crate::transcripts::agents::opencode::open_sqlite_readonly;
-use crate::transcripts::types::{TranscriptBatch, TranscriptError};
-use crate::transcripts::watermark::{TimestampCursorWatermark, WatermarkStrategy};
+use crate::streams::agents::opencode::open_sqlite_readonly;
+use crate::streams::types::{StreamBatch, StreamError};
+use crate::streams::watermark::{TimestampCursorWatermark, WatermarkStrategy};
 use rusqlite::Connection;
 use serde_json::json;
 use std::collections::HashMap;
 use std::path::Path;
 use std::time::Duration;
 
-fn map_sqlite_error(e: rusqlite::Error, context: &str) -> TranscriptError {
+fn map_sqlite_error(e: rusqlite::Error, context: &str) -> StreamError {
     if let rusqlite::Error::SqliteFailure(ref err, _) = e
         && (err.code == rusqlite::ffi::ErrorCode::DatabaseBusy
             || err.code == rusqlite::ffi::ErrorCode::DatabaseLocked)
     {
-        return TranscriptError::Transient {
+        return StreamError::Transient {
             message: format!("{}: {}", context, e),
             retry_after: Duration::from_secs(2),
         };
     }
-    TranscriptError::Fatal {
+    StreamError::Fatal {
         message: format!("{}: {}", context, e),
     }
 }
@@ -30,11 +30,11 @@ pub fn read_otel_spans_incremental(
     path: &Path,
     watermark: Box<dyn WatermarkStrategy>,
     batch_size: usize,
-) -> Result<TranscriptBatch, TranscriptError> {
+) -> Result<StreamBatch, StreamError> {
     let cursor = watermark
         .as_any()
         .downcast_ref::<TimestampCursorWatermark>()
-        .ok_or_else(|| TranscriptError::Fatal {
+        .ok_or_else(|| StreamError::Fatal {
             message: "OTEL stream requires TimestampCursorWatermark".to_string(),
         })?;
 
@@ -42,7 +42,7 @@ pub fn read_otel_spans_incremental(
 
     let spans = read_spans_after(&conn, cursor.timestamp_millis, &cursor.last_id, batch_size)?;
     if spans.is_empty() {
-        return Ok(TranscriptBatch {
+        return Ok(StreamBatch {
             events: vec![],
             new_watermark: Box::new(cursor.clone()),
         });
@@ -65,7 +65,7 @@ pub fn read_otel_spans_incremental(
         })
         .collect();
 
-    Ok(TranscriptBatch {
+    Ok(StreamBatch {
         events: json_events,
         new_watermark: Box::new(new_watermark),
     })
@@ -103,7 +103,7 @@ fn read_spans_after(
     after_ms: i64,
     after_id: &str,
     limit: usize,
-) -> Result<Vec<SpanRow>, TranscriptError> {
+) -> Result<Vec<SpanRow>, StreamError> {
     // Keyset pagination: skip spans at or before the cursor.
     // If after_id is empty (initial state), use simple `>` on timestamp.
     // Otherwise use compound `(ts > ?) OR (ts = ? AND id > ?)` to handle ties.
@@ -195,7 +195,7 @@ fn read_spans_after(
 fn read_attributes_for_spans(
     conn: &Connection,
     span_ids: &[&str],
-) -> Result<HashMap<String, HashMap<String, String>>, TranscriptError> {
+) -> Result<HashMap<String, HashMap<String, String>>, StreamError> {
     if span_ids.is_empty() {
         return Ok(HashMap::new());
     }
@@ -232,7 +232,7 @@ fn read_attributes_for_spans(
 fn read_events_for_spans(
     conn: &Connection,
     span_ids: &[&str],
-) -> Result<HashMap<String, Vec<serde_json::Value>>, TranscriptError> {
+) -> Result<HashMap<String, Vec<serde_json::Value>>, StreamError> {
     if span_ids.is_empty() {
         return Ok(HashMap::new());
     }
@@ -344,7 +344,7 @@ pub fn extract_otel_event_timestamp(event: &serde_json::Value) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::transcripts::watermark::TimestampCursorWatermark;
+    use crate::streams::watermark::TimestampCursorWatermark;
 
     fn create_test_otel_db() -> (tempfile::TempDir, std::path::PathBuf) {
         let dir = tempfile::tempdir().unwrap();
@@ -596,8 +596,8 @@ mod tests {
 
     #[test]
     fn test_extract_event_session_id_chat_session_id() {
-        use crate::transcripts::agent::Agent;
-        use crate::transcripts::agents::CopilotAgent;
+        use crate::streams::agent::Agent;
+        use crate::streams::agents::CopilotAgent;
 
         let agent = CopilotAgent::new();
         let event = serde_json::json!({
@@ -617,8 +617,8 @@ mod tests {
 
     #[test]
     fn test_extract_event_session_id_fallback_to_conversation_id() {
-        use crate::transcripts::agent::Agent;
-        use crate::transcripts::agents::CopilotAgent;
+        use crate::streams::agent::Agent;
+        use crate::streams::agents::CopilotAgent;
 
         let agent = CopilotAgent::new();
         let event = serde_json::json!({
@@ -637,8 +637,8 @@ mod tests {
 
     #[test]
     fn test_extract_event_session_id_empty_strings_return_none() {
-        use crate::transcripts::agent::Agent;
-        use crate::transcripts::agents::CopilotAgent;
+        use crate::streams::agent::Agent;
+        use crate::streams::agents::CopilotAgent;
 
         let agent = CopilotAgent::new();
         let event = serde_json::json!({
@@ -654,8 +654,8 @@ mod tests {
 
     #[test]
     fn test_extract_event_session_id_no_span_key() {
-        use crate::transcripts::agent::Agent;
-        use crate::transcripts::agents::CopilotAgent;
+        use crate::streams::agent::Agent;
+        use crate::streams::agents::CopilotAgent;
 
         let agent = CopilotAgent::new();
         let event = serde_json::json!({"type": "user", "content": "hello"});
@@ -664,8 +664,8 @@ mod tests {
 
     #[test]
     fn test_extract_event_session_id_missing_both_fields() {
-        use crate::transcripts::agent::Agent;
-        use crate::transcripts::agents::CopilotAgent;
+        use crate::streams::agent::Agent;
+        use crate::streams::agents::CopilotAgent;
 
         let agent = CopilotAgent::new();
         let event = serde_json::json!({
@@ -681,8 +681,8 @@ mod tests {
 
     #[test]
     fn test_extract_event_session_id_empty_chat_falls_to_conversation() {
-        use crate::transcripts::agent::Agent;
-        use crate::transcripts::agents::CopilotAgent;
+        use crate::streams::agent::Agent;
+        use crate::streams::agents::CopilotAgent;
 
         let agent = CopilotAgent::new();
         let event = serde_json::json!({
@@ -791,7 +791,7 @@ mod tests {
         );
         let result = super::map_sqlite_error(err, "test operation");
         match result {
-            TranscriptError::Transient {
+            StreamError::Transient {
                 message,
                 retry_after,
             } => {
@@ -814,7 +814,7 @@ mod tests {
         );
         let result = super::map_sqlite_error(err, "test operation");
         match result {
-            TranscriptError::Fatal { message } => {
+            StreamError::Fatal { message } => {
                 assert!(message.contains("test operation"));
                 assert!(message.contains("malformed"));
             }

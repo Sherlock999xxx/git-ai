@@ -1,7 +1,7 @@
 use super::parse;
 use super::{
     AgentPreset, ParsedHookEvent, PostBashCall, PostFileEdit, PreBashCall, PreFileEdit,
-    PresetContext, TranscriptFormat, TranscriptSource,
+    PresetContext, StreamFormat, TranscriptSource,
 };
 use crate::authorship::authorship_log_serialization::generate_session_id;
 use crate::authorship::working_log::AgentId;
@@ -44,7 +44,7 @@ impl AgentPreset for ContinueCliPreset {
 
         let transcript_source = Some(TranscriptSource {
             path: PathBuf::from(transcript_path),
-            format: TranscriptFormat::ContinueJson,
+            format: StreamFormat::ContinueJson,
             session_id: generate_session_id(&session_id, "continue-cli"),
             external_session_id: session_id.clone(),
             external_parent_session_id: None,
@@ -130,7 +130,7 @@ mod tests {
                 assert_eq!(e.context.agent_id.tool, "continue-cli");
                 assert!(e.transcript_source.is_some());
                 if let Some(ts) = &e.transcript_source {
-                    assert_eq!(ts.format, TranscriptFormat::ContinueJson);
+                    assert_eq!(ts.format, StreamFormat::ContinueJson);
                     assert_eq!(
                         ts.session_id,
                         generate_session_id("cont-sess-1", "continue-cli")

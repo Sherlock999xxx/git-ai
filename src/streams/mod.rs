@@ -1,22 +1,22 @@
-//! Transcript processing module for tracking and reading AI agent transcripts.
+//! Stream processing module for tracking and reading AI agent streams.
 //!
 //! This module provides:
-//! - Watermarking strategies for incremental transcript processing
+//! - Watermarking strategies for incremental stream processing
 //! - SQLite database for stream cursor tracking and state persistence
-//! - Error types for transcript processing failures
+//! - Error types for stream processing failures
 //!
 //! # Architecture
 //!
-//! The transcripts module is designed to work with the daemon worker to:
-//! 1. Track transcript files for multiple AI agents (Claude Code, Cursor, etc.)
+//! The streams module is designed to work with the daemon worker to:
+//! 1. Track stream files for multiple AI agents (Claude Code, Cursor, etc.)
 //! 2. Maintain processing state via watermarks (byte offsets, record indices, timestamps)
-//! 3. Emit telemetry events from transcript data
+//! 3. Emit telemetry events from stream data
 //!
 //! # Example
 //!
 //! ```ignore
-//! use crate::transcripts::{StreamsDatabase, StreamRecord};
-//! use crate::transcripts::watermark::{ByteOffsetWatermark, WatermarkStrategy};
+//! use crate::streams::{StreamsDatabase, StreamRecord};
+//! use crate::streams::watermark::{ByteOffsetWatermark, WatermarkStrategy};
 //!
 //! // Open database
 //! // Note: the file is still named "transcripts-db" for backwards compatibility.
@@ -50,7 +50,7 @@ pub mod watermark;
 
 // Re-export main types for convenient access
 pub use db::{StreamRecord, StreamsDatabase};
-pub use types::{TranscriptBatch, TranscriptError};
+pub use types::{StreamBatch, StreamError};
 pub use watermark::{
     ByteOffsetWatermark, HybridWatermark, RecordIndexWatermark, TimestampCursorWatermark,
     TimestampWatermark, WatermarkStrategy, WatermarkType,

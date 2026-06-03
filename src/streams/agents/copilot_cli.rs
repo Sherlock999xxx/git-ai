@@ -1,8 +1,8 @@
 use crate::authorship::authorship_log_serialization::generate_session_id;
-use crate::transcripts::agent::{Agent, PathResolverKind, StreamDescriptor};
-use crate::transcripts::sweep::{DiscoveredSession, SweepStrategy, TranscriptFormat};
-use crate::transcripts::types::{TranscriptBatch, TranscriptError};
-use crate::transcripts::watermark::WatermarkStrategy;
+use crate::streams::agent::{Agent, PathResolverKind, StreamDescriptor};
+use crate::streams::sweep::{DiscoveredSession, StreamFormat, SweepStrategy};
+use crate::streams::types::{StreamBatch, StreamError};
+use crate::streams::watermark::WatermarkStrategy;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -43,7 +43,7 @@ impl Agent for CopilotCliAgent {
         SweepStrategy::Periodic(Duration::from_secs(30 * 60))
     }
 
-    fn discover_sessions(&self) -> Result<Vec<DiscoveredSession>, TranscriptError> {
+    fn discover_sessions(&self) -> Result<Vec<DiscoveredSession>, StreamError> {
         let Some(base_dir) = Self::session_state_base_dir() else {
             return Ok(Vec::new());
         };
@@ -52,7 +52,7 @@ impl Agent for CopilotCliAgent {
             return Ok(Vec::new());
         }
 
-        let entries = fs::read_dir(&base_dir).map_err(|e| TranscriptError::Transient {
+        let entries = fs::read_dir(&base_dir).map_err(|e| StreamError::Transient {
             message: format!("Failed to read copilot session-state dir: {}", e),
             retry_after: Duration::from_secs(60),
         })?;
@@ -97,7 +97,7 @@ impl Agent for CopilotCliAgent {
         path: &Path,
         watermark: Box<dyn WatermarkStrategy>,
         session_id: &str,
-    ) -> Result<TranscriptBatch, TranscriptError> {
+    ) -> Result<StreamBatch, StreamError> {
         read_event_stream(path, watermark, session_id, self.batch_size_hint())
     }
 
@@ -119,9 +119,8 @@ impl Agent for CopilotCliAgent {
         file_meta: &std::fs::Metadata,
         is_first_event: bool,
     ) -> u32 {
-        crate::daemon::transcript_worker::extract_event_timestamp(event).unwrap_or_else(|| {
-            crate::transcripts::agent::file_time_fallback(file_meta, is_first_event)
-        })
+        crate::daemon::transcript_worker::extract_event_timestamp(event)
+            .unwrap_or_else(|| crate::streams::agent::file_time_fallback(file_meta, is_first_event))
     }
 
     fn infer_cwd(&self, transcript_path: &Path) -> Option<PathBuf> {
@@ -151,7 +150,7 @@ impl Agent for CopilotCliAgent {
     }
 
     fn streams(&self) -> Vec<StreamDescriptor> {
-        let format = TranscriptFormat::CopilotEventStreamJsonl;
+        let format = StreamFormat::CopilotEventStreamJsonl;
         vec![StreamDescriptor {
             stream_kind: "transcript",
             format,
@@ -167,7 +166,7 @@ impl Agent for CopilotCliAgent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::transcripts::watermark::ByteOffsetWatermark;
+    use crate::streams::watermark::ByteOffsetWatermark;
 
     #[test]
     fn test_sweep_strategy() {

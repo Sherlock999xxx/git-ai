@@ -1,7 +1,7 @@
 use super::parse;
 use super::{
     AgentPreset, ParsedHookEvent, PostBashCall, PostFileEdit, PreBashCall, PreFileEdit,
-    PresetContext, TranscriptFormat, TranscriptSource,
+    PresetContext, StreamFormat, TranscriptSource,
 };
 use crate::authorship::authorship_log_serialization::generate_session_id;
 use crate::authorship::working_log::AgentId;
@@ -112,7 +112,7 @@ impl AgentPreset for WindsurfPreset {
 
         let transcript_source = Some(TranscriptSource {
             path: PathBuf::from(&transcript_path),
-            format: TranscriptFormat::WindsurfJsonl,
+            format: StreamFormat::WindsurfJsonl,
             session_id: generate_session_id(&context.external_session_id, "windsurf"),
             external_session_id: context.external_session_id.clone(),
             external_parent_session_id: None,
@@ -239,7 +239,7 @@ mod tests {
                 assert!(matches!(
                     e.transcript_source,
                     Some(TranscriptSource {
-                        format: TranscriptFormat::WindsurfJsonl,
+                        format: StreamFormat::WindsurfJsonl,
                         ..
                     })
                 ));

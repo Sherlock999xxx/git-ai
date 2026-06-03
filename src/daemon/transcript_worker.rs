@@ -11,10 +11,10 @@ use crate::daemon::transcript_redaction::redact_json_secrets;
 use crate::metrics::{
     EventAttributes, MetricEvent, OtelTraceValues, PosEncoded, SessionEventValues,
 };
-use crate::transcripts::agent::{SHARED_STREAM_SESSION_ID, StreamDescriptor};
-use crate::transcripts::db::{StreamRecord, StreamsDatabase};
-use crate::transcripts::types::TranscriptError;
-use crate::transcripts::watermark::{WatermarkStrategy, WatermarkType};
+use crate::streams::agent::{SHARED_STREAM_SESSION_ID, StreamDescriptor};
+use crate::streams::db::{StreamRecord, StreamsDatabase};
+use crate::streams::types::StreamError;
+use crate::streams::watermark::{WatermarkStrategy, WatermarkType};
 use chrono::{TimeZone, Utc};
 use std::collections::{BinaryHeap, HashSet};
 use std::path::{Path, PathBuf};
@@ -263,7 +263,7 @@ impl TranscriptWorker {
                     external_session_id,
                     external_parent_session_id,
                 } => {
-                    let inferred_cwd = crate::transcripts::agent::get_agent(&tool)
+                    let inferred_cwd = crate::streams::agent::get_agent(&tool)
                         .as_ref()
                         .and_then(|a| a.infer_cwd(&canonical_path));
 
@@ -296,7 +296,7 @@ impl TranscriptWorker {
                         continue;
                     }
 
-                    let Some(agent) = crate::transcripts::agent::get_agent(&tool) else {
+                    let Some(agent) = crate::streams::agent::get_agent(&tool) else {
                         continue;
                     };
                     let Some(stream) = agent
@@ -466,7 +466,7 @@ impl TranscriptWorker {
         non_shared_session_id: &str,
         enqueued: &mut HashSet<(PathBuf, String)>,
     ) -> Vec<ProcessingTask> {
-        let agent = crate::transcripts::agent::get_agent(tool);
+        let agent = crate::streams::agent::get_agent(tool);
         let streams = agent.as_ref().map(|a| a.streams()).unwrap_or_default();
         let mut tasks = Vec::new();
 
@@ -530,7 +530,7 @@ impl TranscriptWorker {
         external_session_id: &str,
         external_parent_session_id: Option<&str>,
         repo_work_dir: Option<&Path>,
-    ) -> Result<(), TranscriptError> {
+    ) -> Result<(), StreamError> {
         let path_str = path.display().to_string();
         if self
             .streams_db
@@ -540,7 +540,7 @@ impl TranscriptWorker {
             return Ok(());
         }
 
-        use crate::transcripts::watermark::ByteOffsetWatermark;
+        use crate::streams::watermark::ByteOffsetWatermark;
 
         let initial_watermark = ByteOffsetWatermark::new(0);
         let record = StreamRecord {
@@ -575,7 +575,7 @@ impl TranscriptWorker {
         external_session_id: Option<&str>,
         external_parent_session_id: Option<&str>,
         repo_work_dir: Option<&Path>,
-    ) -> Result<(), TranscriptError> {
+    ) -> Result<(), StreamError> {
         let path_str = stream_path.display().to_string();
         if self
             .streams_db
@@ -683,7 +683,7 @@ impl TranscriptWorker {
                 tracing::error!(error = %e, session_id = %task.session_id, "task panicked");
                 self.handle_processing_error(
                     task,
-                    TranscriptError::Fatal {
+                    StreamError::Fatal {
                         message: format!("task panicked: {}", e),
                     },
                 )
@@ -702,19 +702,18 @@ impl TranscriptWorker {
         db: &StreamsDatabase,
         telemetry: &DaemonTelemetryWorkerHandle,
         task: &ProcessingTask,
-    ) -> Result<(), TranscriptError> {
+    ) -> Result<(), StreamError> {
         let task_path_str = task.canonical_path.display().to_string();
         let stream = db
             .get_stream(&task.session_id, &task.stream_kind, &task_path_str)?
-            .ok_or_else(|| TranscriptError::Fatal {
+            .ok_or_else(|| StreamError::Fatal {
                 message: format!("stream not found: {}", task.session_id),
             })?;
 
-        let agent = crate::transcripts::agent::get_agent(&task.tool).ok_or_else(|| {
-            TranscriptError::Fatal {
+        let agent =
+            crate::streams::agent::get_agent(&task.tool).ok_or_else(|| StreamError::Fatal {
                 message: format!("unknown agent type: {}", task.tool),
-            }
-        })?;
+            })?;
 
         let watermark_type: WatermarkType = stream.watermark_type.parse()?;
 
@@ -780,7 +779,7 @@ impl TranscriptWorker {
         let watermark_type_str = &stream.watermark_type;
         let is_initial_watermark = stream.watermark_value.is_empty()
             || watermark_type_str
-                .parse::<crate::transcripts::watermark::WatermarkType>()
+                .parse::<crate::streams::watermark::WatermarkType>()
                 .ok()
                 .map(|wt| wt.create_initial_watermark().serialize() == stream.watermark_value)
                 .unwrap_or(false);
@@ -905,9 +904,9 @@ impl TranscriptWorker {
     }
 
     /// Handle a processing error with exponential backoff.
-    async fn handle_processing_error(&mut self, task: ProcessingTask, error: TranscriptError) {
+    async fn handle_processing_error(&mut self, task: ProcessingTask, error: StreamError) {
         match error {
-            TranscriptError::Transient { message, .. } => {
+            StreamError::Transient { message, .. } => {
                 // Retry with exponential backoff: 5s, 30s, 5m, 30m
                 let retry_count = task.retry_count + 1;
                 let max_retries = 4;
@@ -950,7 +949,7 @@ impl TranscriptWorker {
                 retried_task.next_retry_at = Some(std::time::Instant::now() + delay);
                 self.priority_queue.push(retried_task);
             }
-            TranscriptError::Parse { line, message } => {
+            StreamError::Parse { line, message } => {
                 // Parse errors are not retried
                 tracing::error!(
                     session_id = %task.session_id,
@@ -967,7 +966,7 @@ impl TranscriptWorker {
                     tracing::warn!(session_id = %task.session_id, error = %e, "failed to record error in database");
                 }
             }
-            TranscriptError::Fatal { message } => {
+            StreamError::Fatal { message } => {
                 // Fatal errors are not retried
                 tracing::error!(
                     session_id = %task.session_id,

@@ -1,7 +1,7 @@
 use super::parse;
 use super::{
     AgentPreset, ParsedHookEvent, PostBashCall, PostFileEdit, PreBashCall, PreFileEdit,
-    PresetContext, TranscriptFormat, TranscriptSource,
+    PresetContext, StreamFormat, TranscriptSource,
 };
 use crate::authorship::authorship_log_serialization::generate_session_id;
 use crate::authorship::working_log::AgentId;
@@ -125,13 +125,12 @@ impl AgentPreset for DroidPreset {
             .to_string();
 
         // Build metadata
-        let extracted_model =
-            crate::transcripts::model_extraction::extract_model_from_droid_settings(Path::new(
-                &resolved_settings_path,
-            ))
-            .ok()
-            .flatten()
-            .unwrap_or_else(|| "unknown".to_string());
+        let extracted_model = crate::streams::model_extraction::extract_model_from_droid_settings(
+            Path::new(&resolved_settings_path),
+        )
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "unknown".to_string());
 
         let mut metadata = HashMap::new();
         metadata.insert(
@@ -157,7 +156,7 @@ impl AgentPreset for DroidPreset {
 
         let transcript_source = Some(TranscriptSource {
             path: PathBuf::from(&resolved_transcript_path),
-            format: TranscriptFormat::DroidJsonl,
+            format: StreamFormat::DroidJsonl,
             session_id: generate_session_id(&context.external_session_id, "droid"),
             external_session_id: context.external_session_id.clone(),
             external_parent_session_id: None,
@@ -266,7 +265,7 @@ mod tests {
                 );
                 assert!(e.transcript_source.is_some());
                 if let Some(ts) = &e.transcript_source {
-                    assert_eq!(ts.format, TranscriptFormat::DroidJsonl);
+                    assert_eq!(ts.format, StreamFormat::DroidJsonl);
                 }
             }
             _ => panic!("Expected PostFileEdit"),
@@ -298,7 +297,7 @@ mod tests {
                 assert_eq!(e.tool_use_id, "tu-1");
                 assert!(e.transcript_source.is_some());
                 if let Some(ts) = &e.transcript_source {
-                    assert_eq!(ts.format, TranscriptFormat::DroidJsonl);
+                    assert_eq!(ts.format, StreamFormat::DroidJsonl);
                 }
             }
             _ => panic!("Expected PostBashCall"),
