@@ -491,5 +491,4 @@ mod tests {
         let debug_str3 = format!("{:?}", result3);
         assert!(debug_str3.contains("NoAuthorshipAvailable"));
     }
-
 }
