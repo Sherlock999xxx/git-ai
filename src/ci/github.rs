@@ -63,17 +63,23 @@ pub fn get_github_ci_context() -> Result<Option<CiContext>, GitAiError> {
     let base_ref = pull_request.base.ref_name;
     let clone_url = pull_request.base.repo.clone_url.clone();
 
+    // Detect fork: if head repo URL differs from base repo URL, this is a fork PR
+    let fork_clone_url = if pull_request.head.repo.clone_url != pull_request.base.repo.clone_url {
+        let fork_url = pull_request.head.repo.clone_url.clone();
+        println!(
+            "Detected fork PR: head repo {} differs from base repo {}",
+            fork_url, clone_url
+        );
+        Some(fork_url)
+    } else {
+        None
+    };
+
     let clone_dir = "git-ai-ci-clone".to_string();
 
     // Authenticate the clone URL with GITHUB_TOKEN if available
     let authenticated_url = if let Ok(token) = std::env::var("GITHUB_TOKEN") {
-        // Replace https://github.com/ with https://x-access-token:TOKEN@github.com/
-        // Supports both public and enterprise github instances.
-        format!(
-            "https://x-access-token:{}@{}",
-            token,
-            clone_url.strip_prefix("https://").unwrap_or(&clone_url)
-        )
+        authenticate_clone_url(&clone_url, &token)
     } else {
         clone_url
     };
@@ -99,6 +105,15 @@ pub fn get_github_ci_context() -> Result<Option<CiContext>, GitAiError> {
         format!("pull/{}/head:refs/github/pr/{}", pr_number, pr_number),
     ])?;
 
+    // Authenticate the fork clone URL if this is a fork PR
+    let authenticated_fork_url = fork_clone_url.map(|fork_url| {
+        if let Ok(token) = std::env::var("GITHUB_TOKEN") {
+            authenticate_clone_url(&fork_url, &token)
+        } else {
+            fork_url
+        }
+    });
+
     let repo = find_repository_in_path(&clone_dir.clone())?;
 
     Ok(Some(CiContext {
@@ -109,9 +124,18 @@ pub fn get_github_ci_context() -> Result<Option<CiContext>, GitAiError> {
             head_sha: head_sha.clone(),
             base_ref: base_ref.clone(),
             base_sha: pull_request.base.sha.clone(),
+            fork_clone_url: authenticated_fork_url,
         },
         temp_dir: PathBuf::from(clone_dir),
     }))
+}
+
+fn authenticate_clone_url(clone_url: &str, token: &str) -> String {
+    format!(
+        "https://x-access-token:{}@{}",
+        token,
+        clone_url.strip_prefix("https://").unwrap_or(clone_url)
+    )
 }
 
 /// Install or update the GitHub Actions workflow in the current repository
@@ -132,4 +156,25 @@ pub fn install_github_ci_workflow() -> Result<PathBuf, GitAiError> {
         .map_err(|e| GitAiError::Generic(format!("Failed to write workflow file: {}", e)))?;
 
     Ok(dest_path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::authenticate_clone_url;
+
+    #[test]
+    fn test_authenticate_clone_url_supports_github_dot_com() {
+        assert_eq!(
+            authenticate_clone_url("https://github.com/acme/repo.git", "token"),
+            "https://x-access-token:token@github.com/acme/repo.git"
+        );
+    }
+
+    #[test]
+    fn test_authenticate_clone_url_supports_enterprise_hosts() {
+        assert_eq!(
+            authenticate_clone_url("https://github.example.com/acme/repo.git", "token"),
+            "https://x-access-token:token@github.example.com/acme/repo.git"
+        );
+    }
 }
